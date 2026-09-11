@@ -1,0 +1,16 @@
+# Minimal stack overlay for provision_nodes — jenkins
+# Prefer group_vars/all/atlas-compute-provision.yml + ./run.sh; use this as EXTRA_VARS_FILE to switch stacks:
+#   EXTRA_VARS_FILE=examples/jenkins/provision.example.yml ./run.sh provision --tags 00_validate_provision
+#
+# Fill secrets locally (or examples/secrets.example.yml); do not commit live values.
+
+provision_stack: jenkins
+provision_mode: apply
+
+provision_tf_state_git_push: false
+
+provision_inventory_group_map_jenkins:
+  jslave: jslave_vms
+
+provision_tf_module_map_jenkins:
+  jslave_vms: proxmox_jslaves

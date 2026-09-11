@@ -1,0 +1,53 @@
+# VCS / IDE
+.git/
+.gitignore
+*.code-workspace
+.vscode/
+.idea/
+
+# Local runtime / secrets (never bake into image)
+inventory.yml
+hosts
+pub_keys/
+workspace/
+.ansible/
+.ansible_facts_cache/
+*.retry
+vars-file.yml
+ansible_local_execute.cfg
+secrets.yml
+**/secrets.yml
+!roles/**/tasks/secrets.yml
+*.vault
+**/vault.yml
+host_vars/*
+!host_vars/example.yml
+!host_vars/*.example.yml
+
+# Terraform local state / providers
+.terraform/
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+crash.log
+
+# Python caches / venvs
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
+**/venv/
+**/.venv/
+
+# Build artefacts / logs / OS
+*.log
+logs/
+*.tmp
+*.bak
+*.img
+*.qcow2
+*.qcow2.xz
+*.raw
+.DS_Store
+Thumbs.db
+.cache/

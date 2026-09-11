@@ -1,0 +1,82 @@
+---
+# Drop .terraform.lock.hcl when its checksums do not cover preinstalled mirror providers.
+
+- name: Check whether terraform lock file exists in workspace
+  ansible.builtin.stat:
+    path: "{{ provision_tf_workspace_dir }}/.terraform.lock.hcl"
+  register: provision_tf_workspace_lock_stat
+
+- name: Reconcile terraform lock file with preinstalled provider mirror
+  when: provision_tf_workspace_lock_stat.stat.exists
+  block:
+    - name: Create temporary directory for provider lock checksum probe
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: provision_tf_lock_probe_
+      register: provision_tf_lock_probe_dir
+
+    - name: Copy providers.tf into lock checksum probe directory
+      ansible.builtin.copy:
+        src: "{{ provision_tf_workspace_dir }}/providers.tf"
+        dest: "{{ provision_tf_lock_probe_dir.path }}/providers.tf"
+        mode: "0644"
+
+    - name: Generate provider lock checksums from preinstalled mirror
+      ansible.builtin.command:
+        argv:
+          - terraform
+          - providers
+          - lock
+          - "-fs-mirror={{ provision_tf_plugin_dir }}"
+          - -platform=linux_amd64
+          - registry.terraform.io/telmate/proxmox
+          - registry.terraform.io/hashicorp/dns
+        chdir: "{{ provision_tf_lock_probe_dir.path }}"
+      register: provision_tf_lock_probe_cmd
+      changed_when: false
+
+    - name: Read workspace and mirror probe lock files
+      ansible.builtin.slurp:
+        src: "{{ item.src }}"
+      loop:
+        - src: "{{ provision_tf_workspace_dir }}/.terraform.lock.hcl"
+          label: workspace
+        - src: "{{ provision_tf_lock_probe_dir.path }}/.terraform.lock.hcl"
+          label: mirror
+      loop_control:
+        label: "{{ item.label }}"
+      register: provision_tf_lock_slurp
+
+    - name: Compute mirror and workspace provider lock checksums
+      ansible.builtin.set_fact:
+        provision_tf_workspace_lock_hashes: >-
+          {{
+            (provision_tf_lock_slurp.results[0].content | b64decode)
+            | regex_findall('h1:[^"]+')
+            | list
+          }}
+        provision_tf_mirror_lock_hashes: >-
+          {{
+            (provision_tf_lock_slurp.results[1].content | b64decode)
+            | regex_findall('h1:[^"]+')
+            | list
+          }}
+
+    - name: Note terraform lock checksum comparison
+      ansible.builtin.debug:
+        msg: >-
+          workspace lock hashes={{ provision_tf_workspace_lock_hashes }},
+          mirror lock hashes={{ provision_tf_mirror_lock_hashes }}
+
+    - name: Remove stale terraform lock file when mirror checksums differ
+      ansible.builtin.file:
+        path: "{{ provision_tf_workspace_dir }}/.terraform.lock.hcl"
+        state: absent
+      when: provision_tf_mirror_lock_hashes | difference(provision_tf_workspace_lock_hashes) | length > 0
+
+  always:
+    - name: Remove temporary provider lock checksum probe directory
+      ansible.builtin.file:
+        path: "{{ provision_tf_lock_probe_dir.path }}"
+        state: absent
+      when: provision_tf_lock_probe_dir.path is defined

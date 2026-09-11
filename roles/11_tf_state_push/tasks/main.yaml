@@ -1,0 +1,153 @@
+---
+# Push workspace terraform.tfstate into durable path + optional git (ADR 001 / Phase 6).
+# git add uses provision_tf_state_cluster_path only (tfstate/<cluster_id>).
+# Never whole-repo reset; opt-in discard is under repo_prefix only.
+- name: Check workspace terraform.tfstate exists after apply or destroy
+  ansible.builtin.stat:
+    path: "{{ provision_tf_workspace_state_file }}"
+  register: provision_tf_workspace_state_stat
+
+- name: Fail when workspace terraform.tfstate is missing
+  ansible.builtin.fail:
+    msg: "terraform.tfstate not found at {{ provision_tf_workspace_state_file }} — run 10_tf_apply first"
+  when: not provision_tf_workspace_state_stat.stat.exists
+
+- name: Check whether local state directory is a git repository
+  ansible.builtin.stat:
+    path: "{{ provision_tf_state_local_dir }}/.git"
+  register: provision_tf_state_git_meta
+
+- name: Fail when git push requested but state directory is not a git repository
+  ansible.builtin.fail:
+    msg: >-
+      provision_tf_state_git_push=true but {{ provision_tf_state_local_dir }} is not a git repository.
+      Run 07_tf_state_pull with git push enabled, or remove the directory and re-run the pipeline.
+  when:
+    - provision_tf_state_git_push | default(false) | bool
+    - not (provision_tf_state_git_meta.stat.exists | default(false))
+
+- name: Prepare git working tree before state sync
+  when: provision_tf_state_git_push | default(false) | bool
+  vars:
+    provision_tf_state_git_prefix: "{{ provision_tf_state_repo_prefix | trim }}"
+  block:
+    - name: Detect dirty paths outside durable tfstate prefix
+      ansible.builtin.command:
+        cmd: >-
+          git status --porcelain --untracked-files=all --
+          . ":(exclude){{ provision_tf_state_git_prefix }}"
+          ":(exclude){{ provision_tf_state_git_prefix }}/**"
+        chdir: "{{ provision_tf_state_local_dir }}"
+      register: provision_tf_state_dirty_outside
+      changed_when: false
+
+    - name: Fail when checkout has local changes outside tfstate/
+      ansible.builtin.fail:
+        msg: >-
+          Local modifications outside {{ provision_tf_state_git_prefix }}/ in
+          {{ provision_tf_state_local_dir }} block git pull/push (force=no; never
+          whole-repo reset):
+          {{ provision_tf_state_dirty_outside.stdout | trim }}
+          Commit/stash those paths first.
+      when: (provision_tf_state_dirty_outside.stdout | default('') | trim | length) > 0
+
+    - name: Detect dirty paths under durable tfstate prefix
+      ansible.builtin.command:
+        cmd: >-
+          git status --porcelain --untracked-files=all --
+          {{ provision_tf_state_git_prefix }}
+        chdir: "{{ provision_tf_state_local_dir }}"
+      register: provision_tf_state_dirty_inside
+      changed_when: false
+
+    - name: Discard local changes under tfstate/ only before pull (opt-in)
+      ansible.builtin.shell: |
+        set -euo pipefail
+        prefix="{{ provision_tf_state_git_prefix }}"
+        if git rev-parse --verify HEAD >/dev/null 2>&1; then
+          git checkout HEAD -- "$prefix" 2>/dev/null || true
+        fi
+        git clean -fd -- "$prefix"
+      args:
+        chdir: "{{ provision_tf_state_local_dir }}"
+        executable: /bin/bash
+      when:
+        - provision_tf_state_git_discard_local | default(false) | bool
+        - (provision_tf_state_dirty_inside.stdout | default('') | trim | length) > 0
+
+    - name: Fail when tfstate/ is dirty before pull and discard is disabled
+      ansible.builtin.fail:
+        msg: >-
+          Local modifications under {{ provision_tf_state_git_prefix }}/ in
+          {{ provision_tf_state_local_dir }} block ff-only pull:
+          {{ provision_tf_state_dirty_inside.stdout | trim }}
+          Clean those paths, or set provision_tf_state_git_discard_local=true
+          (under {{ provision_tf_state_git_prefix }}/ only).
+      when:
+        - not (provision_tf_state_git_discard_local | default(false) | bool)
+        - (provision_tf_state_dirty_inside.stdout | default('') | trim | length) > 0
+
+    - name: Pull latest terraform state from remote before syncing local copy
+      ansible.builtin.command:
+        cmd: git pull --ff-only origin {{ provision_tf_state_branch }}
+        chdir: "{{ provision_tf_state_local_dir }}"
+      register: provision_tf_state_git_pull
+      changed_when: >-
+        'Already up to date' not in (provision_tf_state_git_pull.stdout | default(''))
+
+- name: Ensure cluster state directory exists in repository
+  ansible.builtin.file:
+    path: "{{ provision_tf_state_repo_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Copy terraform.tfstate from workspace into state repository
+  ansible.builtin.copy:
+    src: "{{ provision_tf_workspace_state_file }}"
+    dest: "{{ provision_tf_state_repo_file }}"
+    mode: "0600"
+
+- name: Check whether terraform lock file exists in workspace
+  ansible.builtin.stat:
+    path: "{{ provision_tf_workspace_dir }}/.terraform.lock.hcl"
+  register: provision_tf_lock_stat
+
+- name: Sync .terraform.lock.hcl into state repository
+  ansible.builtin.copy:
+    src: "{{ provision_tf_workspace_dir }}/.terraform.lock.hcl"
+    dest: "{{ provision_tf_state_repo_dir }}/.terraform.lock.hcl"
+    mode: "0644"
+  when: provision_tf_lock_stat.stat.exists
+
+- name: Skip git push for terraform state (local-only mode)
+  ansible.builtin.debug:
+    msg: >-
+      provision_tf_state_git_push=false — state synced to {{ provision_tf_state_repo_file }} only;
+      skipping git commit/push
+  when: not (provision_tf_state_git_push | default(false) | bool)
+
+- name: Commit and push terraform state changes
+  when: provision_tf_state_git_push | default(false) | bool
+  ansible.builtin.shell: |
+    set -euo pipefail
+    git add -- "{{ provision_tf_state_cluster_path }}"
+    staged="$(git diff --cached --name-only || true)"
+    if [ -z "$staged" ]; then
+      exit 0
+    fi
+    while IFS= read -r rel; do
+      case "$rel" in
+        {{ provision_tf_state_repo_prefix }}/*) ;;
+        *)
+          echo "Refusing to commit path outside {{ provision_tf_state_repo_prefix }}/: $rel" >&2
+          exit 1
+          ;;
+      esac
+    done <<STAGED
+    $staged
+    STAGED
+    git commit -m "Update terraform state {{ provision_tf_state_cluster_path }} at $(date -Iseconds)"
+    git push origin {{ provision_tf_state_branch }}
+  args:
+    chdir: "{{ provision_tf_state_local_dir }}"
+    executable: /bin/bash

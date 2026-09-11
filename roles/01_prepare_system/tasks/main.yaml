@@ -1,0 +1,159 @@
+---
+- name: Check if the system is Debian-based
+  ansible.builtin.stat:
+    path: /etc/debian_version
+  register: debian_based
+
+- name: Check if the system is RPM-based
+  ansible.builtin.stat:
+    path: /etc/redhat-release
+  register: rpm_based
+
+- name: Check if the system is Alpine-based
+  ansible.builtin.stat:
+    path: /etc/alpine-release
+  register: alpine_based
+
+- name: Set build host tools and package lists
+  ansible.builtin.set_fact:
+    build_prepare_tools: >-
+      {{
+        ['sudo', 'wget', 'rsync', 'sshpass']
+        + (['virt-customize'] if (build_cloud_image_customize_enabled | bool) else [])
+      }}
+    build_prepare_ubuntu_packages: >-
+      {{
+        ['sudo', 'wget', 'rsync', 'sshpass']
+        + (['libguestfs-tools', 'isc-dhcp-client', 'linux-image-generic']
+           if (build_cloud_image_customize_enabled | bool) else [])
+      }}
+    build_prepare_debian_packages: >-
+      {{
+        ['sudo', 'wget', 'rsync', 'sshpass']
+        + (['libguestfs-tools', 'isc-dhcp-client', 'linux-image-amd64']
+           if (build_cloud_image_customize_enabled | bool) else [])
+      }}
+    build_prepare_rpm_packages: >-
+      {{
+        ['sudo', 'wget', 'rsync', 'sshpass']
+        + (['libguestfs-tools-c', 'dhcp-client']
+           if (build_cloud_image_customize_enabled | bool) else [])
+      }}
+    build_prepare_alpine_packages: >-
+      {{
+        ['sudo', 'wget', 'rsync', 'sshpass']
+        + (['guestfs-tools', 'libguestfs', 'qemu-img']
+           if (build_cloud_image_customize_enabled | bool) else [])
+      }}
+
+- name: Verify required build tools are available on host
+  ansible.builtin.shell: |
+    set -euo pipefail
+    command -v {{ item }}
+  args:
+    executable: /bin/bash
+  loop: "{{ build_prepare_tools }}"
+  register: build_tool_checks
+  changed_when: false
+  failed_when: false
+
+- name: Compute missing build tools
+  ansible.builtin.set_fact:
+    build_prepare_tools_missing: >-
+      {{
+        build_tool_checks.results
+        | rejectattr('rc', 'equalto', 0)
+        | map(attribute='item')
+        | list
+      }}
+
+- name: Build tools already present — skip package install
+  ansible.builtin.debug:
+    msg: >-
+      Skipping package install: {{ build_prepare_tools | join(', ') }} already on PATH.
+  when: build_prepare_tools_missing | length == 0
+
+- name: Missing build tools — package install required
+  ansible.builtin.debug:
+    msg: "Will install packages for missing tools: {{ build_prepare_tools_missing | join(', ') }}"
+  when: build_prepare_tools_missing | length > 0
+
+- name: Read OS release for Debian-family distros
+  ansible.builtin.slurp:
+    src: /etc/os-release
+  register: build_os_release
+  when:
+    - debian_based.stat.exists
+    - build_prepare_tools_missing | length > 0
+
+- name: Detect Ubuntu / Kubuntu (ID=ubuntu in os-release)
+  ansible.builtin.set_fact:
+    build_is_ubuntu_family: "{{ (build_os_release.content | b64decode) is search('(?m)^ID=ubuntu') }}"
+  when:
+    - debian_based.stat.exists
+    - build_prepare_tools_missing | length > 0
+
+- name: Install software on Ubuntu / Kubuntu
+  ansible.builtin.apt:
+    name: "{{ build_prepare_ubuntu_packages }}"
+    state: present
+    install_recommends: false
+    force_apt_get: true
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+  when:
+    - debian_based.stat.exists
+    - build_is_ubuntu_family | default(false) | bool
+    - build_prepare_tools_missing | length > 0
+
+- name: Install software on Debian
+  ansible.builtin.apt:
+    name: "{{ build_prepare_debian_packages }}"
+    state: present
+    install_recommends: false
+    force_apt_get: true
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+  when:
+    - debian_based.stat.exists
+    - not (build_is_ubuntu_family | default(false) | bool)
+    - build_prepare_tools_missing | length > 0
+
+- name: Install software on rpm Linux
+  ansible.builtin.dnf:
+    name: "{{ build_prepare_rpm_packages }}"
+    state: present
+  when:
+    - rpm_based.stat.exists
+    - build_prepare_tools_missing | length > 0
+
+- name: Install software on Alpine
+  community.general.apk:
+    name: "{{ build_prepare_alpine_packages }}"
+    state: present
+    update_cache: true
+  when:
+    - alpine_based.stat.exists
+    - build_prepare_tools_missing | length > 0
+
+- name: Verify virt-customize is on PATH when cloud image customize is enabled
+  ansible.builtin.shell: |
+    set -euo pipefail
+    command -v virt-customize
+  args:
+    executable: /bin/bash
+  register: build_virt_customize_check
+  changed_when: false
+  failed_when: false
+  when: build_cloud_image_customize_enabled | bool
+
+- name: Fail when virt-customize is required but not available
+  ansible.builtin.fail:
+    msg: >-
+      build_cloud_image_customize_enabled=true requires virt-customize on PATH after
+      package install.{% if alpine_based.stat.exists | default(false) %}
+      Alpine guestfs-tools (edge/testing) does not include virt-customize —
+      use a Debian/Ubuntu build host or disable build_cloud_image_customize_enabled.{% endif %}
+  when:
+    - build_cloud_image_customize_enabled | bool
+    - build_virt_customize_check.rc | default(1) != 0

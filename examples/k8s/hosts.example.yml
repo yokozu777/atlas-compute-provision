@@ -1,0 +1,56 @@
+# Minimal k8s inventory for validate smoke (no live PVE required).
+# Pair with maps.example.yml:
+#   INVENTORY=examples/k8s/hosts.example.yml \
+#     EXTRA_VARS_FILE=examples/k8s/maps.example.yml \
+#     ./run.sh provision --tags 00_validate_provision
+
+all:
+  children:
+    k8s_lbs:
+      hosts:
+        192.0.2.10:
+          hostname: lb01.k8s.example.com
+          provision:
+            vmid: "5100"
+            sockets: 1
+            cores: 2
+            memory: 4096
+            numa: false
+            clone: ubuntu-noble
+            disks:
+              - size: "50"
+                slot: 0
+                storage: local-lvm
+    k8s_masters:
+      hosts:
+        192.0.2.11:
+          hostname: master01.k8s.example.com
+          provision:
+            vmid: "5101"
+            sockets: 1
+            cores: 4
+            memory: 8192
+            numa: false
+            clone: ubuntu-noble
+            disks:
+              - size: "100"
+                slot: 0
+                storage: local-lvm
+    k8s_workers:
+      hosts:
+        192.0.2.12:
+          hostname: worker01.k8s.example.com
+          provision:
+            vmid: "5102"
+            sockets: 1
+            cores: 4
+            memory: 8192
+            numa: false
+            clone: ubuntu-noble
+            disks:
+              - size: "100"
+                slot: 0
+                storage: local-lvm
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+    ansible_ssh_user: localuser

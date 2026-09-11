@@ -1,0 +1,114 @@
+---
+# Proxmox VM + DNS provisioning (atlas-compute-provision roles 00, 06–11, 09a)
+# Vars: group_vars/all/atlas-compute-provision.yml + playbooks/group_vars/all/provision_defaults.yml
+#       (+ secrets via EXTRA_VARS_FILE / ./run.sh)
+# Maps: provision_inventory_group_map_<provision_stack>
+#       (see playbooks/group_vars/all/provision_stack_maps.yml)
+
+- hosts: localhost
+  gather_facts: false
+  tags: [00_ensure_workspace]
+  roles:
+    - role: 00_ensure_workspace
+
+- hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Show resolved provision stack maps
+      ansible.builtin.debug:
+        msg: >-
+          provision_stack={{ provision_stack }},
+          provision_inventory_group_map={{ provision_inventory_group_map.keys() | list }}
+      tags: [00_ensure_workspace]
+  roles:
+    - role: 00_validate_provision
+      tags: 00_validate_provision
+    - role: 06_configure_git
+      tags: 06_configure_git
+    - role: 07_tf_state_pull
+      tags: 07_tf_state_pull
+    - role: 08_generate_tf_vars
+      tags: 08_generate_tf_vars
+
+- hosts: localhost
+  gather_facts: false
+  roles:
+    - role: 09a_tf_destroy_dns
+      tags: 09a_tf_destroy_dns
+
+- hosts: localhost
+  gather_facts: false
+  tags:
+    - 09_hypervisor_cleaner
+  tasks:
+    - name: Register Proxmox hypervisor in runtime inventory
+      ansible.builtin.add_host:
+        name: "{{ provision_pve_inventory_name }}"
+        groups: "{{ provision_pve_inventory_group | default('proxmox') }}"
+        ansible_host: "{{ provision_pve_host }}"
+        ansible_user: "{{ provision_pve_user }}"
+        ansible_ssh_user: "{{ provision_pve_user }}"
+        ansible_ssh_pass: "{{ provision_pve_ssh_password }}"
+        ansible_python_interpreter: "{{ provision_pve_python_interpreter }}"
+
+- hosts: "{{ provision_pve_inventory_group | default('proxmox') }}"
+  gather_facts: false
+  tags:
+    - 09_hypervisor_cleaner
+  remote_user: "{{ provision_pve_user }}"
+  strategy: linear
+  roles:
+    - role: 09_hypervisor_cleaner
+      tags: 09_hypervisor_cleaner
+
+- hosts: localhost
+  roles:
+    - role: 10_tf_apply
+      tags: 10_tf_apply
+
+- name: Wait for SSH on provisioned nodes after terraform apply
+  hosts: localhost
+  gather_facts: false
+  tags: [provision_wait_ssh]
+  tasks:
+    - name: Resolve provisioned inventory hosts for SSH wait
+      when: provision_mode in ['apply', 'recreate']
+      ansible.builtin.set_fact:
+        provision_wait_ssh_host_list: >-
+          {{
+            (
+              provision_wait_hosts.split(':')
+              | map('extract', groups)
+              | flatten
+              | unique
+              | sort
+            )
+            if (provision_wait_hosts | default('') | trim | length > 0)
+            else (
+              provision_inventory_group_map.keys()
+              | map('extract', groups)
+              | flatten
+              | unique
+              | sort
+            )
+          }}
+
+    - name: Wait until SSH accepts connections on provisioned nodes
+      when: provision_mode in ['apply', 'recreate']
+      ansible.builtin.wait_for_connection:
+        connect_timeout: "{{ provision_wait_ssh_connect_timeout | default(10) }}"
+        sleep: "{{ provision_wait_ssh_sleep | default(5) }}"
+        delay: "{{ provision_wait_ssh_delay | default(10) }}"
+        timeout: "{{ provision_wait_ssh_timeout | default(600) }}"
+      vars:
+        ansible_user: "{{ provision_vm_ciuser | default('root') }}"
+        ansible_ssh_user: "{{ provision_vm_ciuser | default('root') }}"
+      delegate_to: "{{ item }}"
+      loop: "{{ provision_wait_ssh_host_list }}"
+      loop_control:
+        label: "{{ item }}"
+
+- hosts: localhost
+  roles:
+    - role: 11_tf_state_push
+      tags: 11_tf_state_push

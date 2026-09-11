@@ -1,0 +1,30 @@
+terraform {
+  required_providers {
+    proxmox = {
+      source  = "telmate/proxmox"
+      version = "{{ provision_tf_provider_proxmox_version }}"
+    }
+    dns = {
+      source  = "hashicorp/dns"
+      version = "{{ provision_tf_provider_dns_version }}"
+    }
+  }
+}
+
+provider "proxmox" {
+  pm_api_url          = var.provision_proxmox_api_url
+  pm_api_token_id     = var.provision_proxmox_token_id
+  pm_api_token_secret = var.provision_proxmox_token_secret
+  pm_tls_insecure     = var.provision_proxmox_tls_insecure
+  pm_parallel         = var.provision_proxmox_parallel
+}
+
+provider "dns" {
+  update {
+    server        = var.provision_dns_server
+    key_name      = var.provision_dns_key_name
+    key_algorithm = var.provision_dns_key_algorithm
+    key_secret    = var.provision_dns_key_secret
+    transport     = var.provision_dns_transport
+  }
+}

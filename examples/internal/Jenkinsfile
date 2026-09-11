@@ -1,0 +1,161 @@
+// INTERNAL SAMPLE ONLY — not part of the product path.
+// Site-specific Jenkins jobs (proxmox_cleaner, prepare_workflow, credential IDs) must be
+// adapted per environment. Prefer ansible-playbook / future ./run.sh for standalone runs.
+// Optional ORCHESTRATOR_DIR: merge extra vars from an external clusters/<id>/group_vars/all/.
+
+pipeline {
+    agent { label 'built-in' }
+
+    environment {
+        PVE_SSH_PASS = credentials('PVE_SERVER_PASSWORD')
+        ANSIBLE_FORCE_COLOR = 'true'
+    }
+
+    options {
+        disableConcurrentBuilds()
+        buildDiscarder(logRotator(numToKeepStr: '25', artifactNumToKeepStr: '25'))
+        timestamps()
+    }
+
+    post {
+        always {
+            script {
+                cleanWs(
+                    cleanWhenNotBuilt: false,
+                    deleteDirs: true,
+                    disableDeferredWipeout: false,
+                    notFailBuild: true
+                )
+            }
+        }
+        success {
+            echo "Build completed successfully. Workspace cleaned."
+        }
+        failure {
+            echo "Build failed. Cleaning workspace..."
+        }
+    }
+
+    stages {
+        stage('Clean agents') {
+            steps {
+                script {
+                    build job: 'proxmox_cleaner', wait: true, parameters: [
+                        string(name: 'VMID_FILE', value: 'vmid_list.txt'),
+                        string(name: 'CALLING_JOB', value: 'agent_prepare')
+                    ]
+                }
+            }
+        }
+
+        stage('Clean cluster VMs') {
+            steps {
+                script {
+                    build job: 'proxmox_cleaner', wait: true, parameters: [
+                        string(name: 'VMID_FILE', value: 'vmid_list.txt'),
+                        string(name: 'CALLING_JOB', value: 'orchestrator')
+                    ]
+                }
+            }
+        }
+
+        stage('Clean old images') {
+            steps {
+                sh '''
+                    rm -rf *.img *.qcow2* *.raw
+                    rm -rf /tmp/virt-customize-output.log
+                '''
+            }
+        }
+
+        stage('prepare_workflow') {
+            steps {
+                build job: 'prepare_workflow', wait: true
+            }
+        }
+
+        stage('setup and execute') {
+            agent {
+                docker {
+                    label 'built-in'
+                    image 'ubuntu:26.04'
+                    args '--privileged'
+                }
+            }
+            stages {
+                stage('install ansible') {
+                    steps {
+                        sh 'apt-get update && apt-get install --no-install-recommends -y ansible'
+                    }
+                }
+
+                stage('01_prepare_system') {
+                    steps {
+                        sh '''
+                            ansible-playbook playbooks/build_templates.yaml \
+                              --tags "00_check_pve_templates,01_prepare_system" \
+                              -e @vars-build.yml \
+                              -e "provision_pve_ssh_password=${PVE_SSH_PASS_PSW}"
+                        '''
+                    }
+                }
+
+                stage('02_download_images') {
+                    steps {
+                        sh '''
+                            ansible-playbook playbooks/build_templates.yaml \
+                              --tags "00_check_pve_templates,02_download_images" \
+                              -e @vars-build.yml \
+                              -e "provision_pve_ssh_password=${PVE_SSH_PASS_PSW}"
+                        '''
+                    }
+                }
+
+                stage('03_customize_images') {
+                    steps {
+                        sh '''
+                            ansible-playbook playbooks/build_templates.yaml \
+                              --tags "00_check_pve_templates,03_customize_images" \
+                              -e @vars-build.yml \
+                              -e "provision_pve_ssh_password=${PVE_SSH_PASS_PSW}"
+                        '''
+                    }
+                }
+
+                stage('04_upload_images') {
+                    steps {
+                        sh '''
+                            ansible-playbook playbooks/build_templates.yaml \
+                              --tags "00_check_pve_templates,04_upload_images" \
+                              -e @vars-build.yml \
+                              -e "provision_pve_ssh_password=${PVE_SSH_PASS_PSW}"
+                        '''
+                    }
+                }
+
+                stage('05_create_pve_templates') {
+                    steps {
+                        sh '''
+                            ansible-playbook playbooks/build_templates.yaml \
+                              --tags "00_check_pve_templates,05_create_pve_templates" \
+                              -e @vars-build.yml \
+                              -e "provision_pve_ssh_password=${PVE_SSH_PASS_PSW}"
+                        '''
+                    }
+                }
+
+                stage('Clean workspace after upload') {
+                    steps {
+                        sh '''
+                            echo "Cleaning build workspace after image upload..."
+                            rm -rf workspace/*/build/workspace/*.img \
+                                   workspace/*/build/workspace/*.qcow2* \
+                                   workspace/*/build/workspace/*.raw 2>/dev/null || true
+                            rm -rf /tmp/virt-customize-output.log
+                        '''
+                    }
+                }
+            }
+        }
+    }
+}

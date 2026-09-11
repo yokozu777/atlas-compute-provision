@@ -1,0 +1,158 @@
+---
+# Check one entry from provision_pve_templates on the Proxmox host.
+#
+# Linked-clone detection (fast path):
+#   1) Parse qm config + compute whether rebuild/rename may touch the template.
+#   2) Only then scan pmxcfs confs once (parent: / base-<id>-), not N× qm config.
+#   3) Rename still requires an empty clone list (same safety as before).
+
+- name: Bind template spec from vars dict entry
+  ansible.builtin.set_fact:
+    build_template: "{{ template_item.value | resolve_pve_template_entry(template_item.key) }}"
+
+- name: Read qm config for template VMID {{ build_template.id }}
+  ansible.builtin.command:
+    cmd: qm config {{ build_template.id }}
+  register: build_qm_config
+  failed_when: false
+  changed_when: false
+
+- name: Parse template state on Proxmox
+  ansible.builtin.set_fact:
+    build_template_missing: "{{ build_qm_config.rc != 0 }}"
+    build_template_is_template: "{{ 'template: 1' in (build_qm_config.stdout_lines | default([])) }}"
+    build_template_actual_name: >-
+      {{
+        build_qm_config.stdout_lines
+        | select('match', '^name: ')
+        | first
+        | default('name: ', true)
+        | regex_replace('^name: ', '')
+        | trim
+      }}
+    build_template_has_scsi0: >-
+      {{ (build_qm_config.stdout_lines | default([]) | select('match', '^scsi0:') | list | length) > 0 }}
+    build_template_has_unused_disk: >-
+      {{ (build_qm_config.stdout_lines | default([]) | select('match', '^unused0:') | list | length) > 0 }}
+    build_template_boot_line: >-
+      {{
+        build_qm_config.stdout_lines
+        | default([])
+        | select('match', '^boot:')
+        | first
+        | default('', true)
+      }}
+    build_template_boots_scsi0: >-
+      {{ 'scsi0' in (build_qm_config.stdout_lines | default([]) | select('match', '^boot:') | first | default('', true)) }}
+    # Default until optional conf scan runs.
+    build_template_linked_clone_vmids: []
+
+- name: Decide whether linked-clone conf scan is required
+  ansible.builtin.set_fact:
+    # Scan when rebuild and/or rename may proceed — skip on fully-OK templates.
+    build_template_need_linked_scan: "{{
+        (build_force_rebuild | default(false) | bool)
+        or (build_template_missing | bool)
+        or (not (build_template_missing | bool) and not (build_template_is_template | bool))
+        or (
+          not (build_template_missing | bool)
+          and (build_template_is_template | bool)
+          and (build_template_actual_name != build_template.name)
+          and not (build_force_rebuild | default(false) | bool)
+        )
+        or (
+          not (build_template_missing | bool)
+          and (build_template_is_template | bool)
+          and not (build_template_has_scsi0 | bool)
+        )
+        or (
+          not (build_template_missing | bool)
+          and (build_template_is_template | bool)
+          and (build_template_has_unused_disk | bool)
+        )
+        or (
+          not (build_template_missing | bool)
+          and (build_template_is_template | bool)
+          and not (build_template_boots_scsi0 | bool)
+        )
+      }}"
+
+- name: Detect linked clones for template VMID {{ build_template.id }} (pmxcfs conf scan)
+  ansible.builtin.script:
+    cmd: detect_linked_clones.sh {{ build_template.id }}
+  args:
+    executable: /bin/bash
+  register: build_linked_clones
+  changed_when: false
+  failed_when: (build_linked_clones.rc | default(1) | int) != 0
+  when: build_template_need_linked_scan | bool
+
+- name: Parse linked clone VMIDs from conf scan
+  ansible.builtin.set_fact:
+    build_template_linked_clone_vmids: >-
+      {{
+        build_linked_clones.stdout
+        | default('', true)
+        | trim
+        | split(' ')
+        | reject('equalto', '')
+        | list
+      }}
+  when: build_template_need_linked_scan | bool
+
+- name: Sync template name on Proxmox to match provision_pve_templates
+  ansible.builtin.command:
+    cmd: "qm set {{ build_template.id }} --name {{ build_template.name }}"
+  register: build_template_rename
+  changed_when: build_template_rename.rc == 0
+  when:
+    - not (build_template_missing | bool)
+    - build_template_is_template | bool
+    - build_template_actual_name != build_template.name
+    - build_template_linked_clone_vmids | length == 0
+    - not (build_force_rebuild | default(false) | bool)
+
+- name: Refresh template name after sync on Proxmox
+  ansible.builtin.set_fact:
+    build_template_actual_name: "{{ build_template.name }}"
+  when: build_template_rename is changed
+
+- name: Compute validation reasons for template {{ build_template.name }}
+  ansible.builtin.set_fact:
+    build_template_check_reasons: >-
+      {{
+        (['build_force_rebuild=true'] if (build_force_rebuild | default(false) | bool) else [])
+        + (['missing on PVE (qm config failed)'] if (build_template_missing and not (build_force_rebuild | default(false) | bool)) else [])
+        + (['not a template (template: 1 required)'] if (not build_template_missing and not build_template_is_template and not (build_force_rebuild | default(false) | bool)) else [])
+        + (['name mismatch: expected ' ~ build_template.name ~ ', got ' ~ build_template_actual_name] if (not build_template_missing and (build_template_actual_name != build_template.name) and not (build_force_rebuild | default(false) | bool)) else [])
+        + (['scsi0 missing (imported OS disk not attached)'] if (not build_template_missing and build_template_is_template and not (build_template_has_scsi0 | bool) and not (build_force_rebuild | default(false) | bool)) else [])
+        + (['imported disk still on unused0'] if (not build_template_missing and build_template_is_template and (build_template_has_unused_disk | bool) and not (build_force_rebuild | default(false) | bool)) else [])
+        + (['boot order must include scsi0, got: ' ~ build_template_boot_line] if (not build_template_missing and build_template_is_template and not (build_template_boots_scsi0 | bool) and not (build_force_rebuild | default(false) | bool)) else [])
+      }}
+
+- name: Fail when rebuild blocked by linked clones
+  ansible.builtin.fail:
+    msg: >-
+      Cannot rebuild template {{ build_template.name }} (VMID {{ build_template.id }}):
+      linked clone VMIDs: {{ build_template_linked_clone_vmids | join(', ') }}.
+      Remove cluster VMs first (proxmox_cleaner / provision 09).
+  when:
+    - build_template_check_reasons | length > 0
+    - build_template_linked_clone_vmids | length > 0
+
+- name: Mark template for rebuild
+  ansible.builtin.set_fact:
+    build_templates_rebuild: "{{ build_templates_rebuild + [build_template] }}"
+  when: build_template_check_reasons | length > 0
+
+- name: Log template check reasons when rebuild required
+  ansible.builtin.debug:
+    msg: >-
+      {{ build_template.template_key }} (VMID {{ build_template.id }}):
+      {{ build_template_check_reasons | join('; ') }}
+  when: build_template_check_reasons | length > 0
+
+- name: Mark template as OK — skip rebuild
+  ansible.builtin.set_fact:
+    build_templates_skip: "{{ build_templates_skip + [build_template] }}"
+  when: build_template_check_reasons | length == 0

@@ -1,0 +1,89 @@
+all:
+  children:
+    kafka:
+      children:
+        kafka_controllers:
+          hosts:
+            192.168.1.240:
+              hostname: controller01.kafka.example.com
+              provision:
+                vmid: "5800"
+                sockets: 1
+                cores: 2
+                memory: 4096
+                numa: false
+                clone: ubuntu-noble
+                disks:
+                  - size: "50"
+                    slot: 0
+                    storage: local-lvm
+            192.168.1.241:
+              hostname: controller02.kafka.example.com
+              provision:
+                vmid: "5801"
+                sockets: 1
+                cores: 2
+                memory: 4096
+                numa: false
+                clone: ubuntu-noble
+                disks:
+                  - size: "50"
+                    slot: 0
+                    storage: local-lvm
+            192.168.1.242:
+              hostname: controller03.kafka.example.com
+              provision:
+                vmid: "5802"
+                sockets: 1
+                cores: 2
+                memory: 4096
+                numa: false
+                clone: ubuntu-noble
+                disks:
+                  - size: "50"
+                    slot: 0
+                    storage: local-lvm
+        kafka_brokers:
+          hosts:
+            192.168.1.243:
+              hostname: broker01.kafka.example.com
+              provision:
+                vmid: "5803"
+                sockets: 1
+                cores: 2
+                memory: 4096
+                numa: false
+                clone: ubuntu-noble
+                disks:
+                  - size: "50"
+                    slot: 0
+                    storage: local-lvm
+            192.168.1.244:
+              hostname: broker02.kafka.example.com
+              provision:
+                vmid: "5804"
+                sockets: 1
+                cores: 2
+                memory: 4096
+                numa: false
+                clone: ubuntu-noble
+                disks:
+                  - size: "50"
+                    slot: 0
+                    storage: local-lvm
+            192.168.1.245:
+              hostname: broker03.kafka.example.com
+              provision:
+                vmid: "5805"
+                sockets: 1
+                cores: 2
+                memory: 4096
+                numa: false
+                clone: ubuntu-noble
+                disks:
+                  - size: "50"
+                    slot: 0
+                    storage: local-lvm
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+    ansible_ssh_user: localuser

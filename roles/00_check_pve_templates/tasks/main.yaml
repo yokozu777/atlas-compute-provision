@@ -1,0 +1,30 @@
+---
+- name: Reset template check results on Proxmox
+  ansible.builtin.set_fact:
+    build_templates_rebuild: []
+    build_templates_skip: []
+
+- name: Check each Proxmox cloud template
+  ansible.builtin.include_tasks: check_template.yaml
+  loop: "{{ provision_pve_templates | dict2items }}"
+  loop_control:
+    loop_var: template_item
+    label: "{{ template_item.key }}"
+
+- name: Set skip-all flag when nothing to rebuild
+  ansible.builtin.set_fact:
+    build_skip_all: "{{ build_templates_rebuild | length == 0 }}"
+
+- name: All cloud templates OK on Proxmox — rebuild not required
+  ansible.builtin.debug:
+    msg: >-
+      Skipping build 01–05. OK templates:
+      {{ build_templates_skip | map(attribute='template_key') | list | join(', ') }}
+  when: build_skip_all | bool
+
+- name: Templates scheduled for rebuild
+  ansible.builtin.debug:
+    msg: >-
+      Rebuild: {{ build_templates_rebuild | map(attribute='template_key') | list | join(', ') }}.
+      Skip OK: {{ build_templates_skip | map(attribute='template_key') | list | join(', ') }}
+  when: build_templates_rebuild | length > 0

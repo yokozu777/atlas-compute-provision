@@ -1,0 +1,186 @@
+---
+# Reconcile terraform state before hypervisor VM cleanup on recreate/destroy.
+#
+# DNS:
+#   provision_dns_tf_manage_a_records=false (default): apex A is BIND-owned;
+#     drop any legacy dns_a_record_set from state without RFC2136 destroy.
+#   provision_dns_tf_manage_a_records=true: Terraform owns apex A;
+#     recreate keeps DNS in state; destroy removes records via terraform destroy.
+
+- name: Skip terraform state reconcile in apply mode
+  ansible.builtin.meta: end_role
+  when: provision_mode == 'apply'
+
+- name: Prepare terraform workspace for state reconcile
+  ansible.builtin.include_role:
+    name: 10_tf_apply
+    tasks_from: prepare_workspace.yaml
+  vars:
+    provision_tf_preserve_workspace_state: false
+
+- name: Check pulled terraform.tfstate in state repository
+  ansible.builtin.stat:
+    path: "{{ provision_tf_state_repo_file }}"
+  register: provision_pulled_tf_state
+
+- name: Fail when cluster terraform state file is missing for recreate or destroy
+  ansible.builtin.fail:
+    msg: >-
+      provision_mode={{ provision_mode }} requires terraform.tfstate at
+      {{ provision_tf_state_repo_file }} — run 07_tf_state_pull first
+  when:
+    - provision_mode in ['recreate', 'destroy']
+    - not provision_pulled_tf_state.stat.exists
+
+- name: Load terraform state for recreate or destroy validation
+  ansible.builtin.set_fact:
+    provision_pulled_tf_state_json: "{{ lookup('file', provision_tf_state_repo_file) | from_json }}"
+  when: provision_pulled_tf_state.stat.exists
+
+- name: Note first-run destroy or recreate with empty terraform state
+  ansible.builtin.debug:
+    msg: >-
+      terraform state at {{ provision_tf_state_repo_file }} has no managed resources
+      (first git run). Skipping state reconcile; VM cleanup uses hosts in 09.
+      {% if provision_mode == 'recreate' %} Terraform apply will create resources in 10.{% endif %}
+  when:
+    - provision_pulled_tf_state.stat.exists
+    - provision_pulled_tf_state_json.resources | default([]) | length == 0
+
+- name: Install pulled terraform.tfstate into workspace
+  ansible.builtin.copy:
+    src: "{{ provision_tf_state_repo_file }}"
+    dest: "{{ provision_tf_workspace_state_file }}"
+    mode: "0600"
+  when:
+    - provision_pulled_tf_state.stat.exists
+    - provision_pulled_tf_state_json.resources | default([]) | length > 0
+
+- name: Reconcile terraform state before hypervisor VM cleanup
+  when:
+    - provision_pulled_tf_state.stat.exists
+    - provision_pulled_tf_state_json.resources | default([]) | length > 0
+  block:
+    - name: Terraform init workspace using preinstalled provider directory
+      ansible.builtin.command:
+        argv:
+          - terraform
+          - init
+          - -input=false
+          - -no-color
+          - "-plugin-dir={{ provision_tf_plugin_dir }}"
+        chdir: "{{ provision_tf_workspace_dir }}"
+      register: provision_tf_state_reconcile_init
+      changed_when: >-
+        'Terraform has been successfully initialized' in provision_tf_state_reconcile_init.stdout
+      when: provision_tf_plugins_preinstalled | default(false) | bool
+
+    - name: Ensure Terraform plugin cache directory exists
+      ansible.builtin.file:
+        path: "{{ provision_tf_plugin_cache_dir }}"
+        state: directory
+        mode: "0755"
+      when: not (provision_tf_plugins_preinstalled | default(false) | bool)
+
+    - name: Terraform init workspace with plugin download cache
+      ansible.builtin.command:
+        cmd: terraform init -input=false -no-color
+        chdir: "{{ provision_tf_workspace_dir }}"
+      environment:
+        TF_PLUGIN_CACHE_DIR: "{{ provision_tf_plugin_cache_dir }}"
+      register: provision_tf_state_reconcile_init
+      changed_when: >-
+        'Terraform has been successfully initialized' in provision_tf_state_reconcile_init.stdout
+      when: not (provision_tf_plugins_preinstalled | default(false) | bool)
+
+    - name: List Proxmox VM resources tracked in terraform state
+      ansible.builtin.shell: |
+        set -euo pipefail
+        terraform state list -no-color | grep 'proxmox_vm_qemu' || true
+      args:
+        chdir: "{{ provision_tf_workspace_dir }}"
+        executable: /bin/bash
+      register: provision_tf_proxmox_state_addrs
+      changed_when: false
+
+    - name: Drop Proxmox VM resources from terraform state (destroyed later in 09)
+      ansible.builtin.command:
+        argv:
+          - terraform
+          - state
+          - rm
+          - -lock=false
+          - -no-color
+          - "{{ item }}"
+        chdir: "{{ provision_tf_workspace_dir }}"
+      loop: "{{ provision_tf_proxmox_state_addrs.stdout_lines | reject('equalto', '') | list }}"
+      when: provision_tf_proxmox_state_addrs.stdout_lines | reject('equalto', '') | list | length > 0
+
+    - name: List Terraform DNS A record resources in state
+      ansible.builtin.shell: |
+        set -euo pipefail
+        terraform state list -no-color | grep 'dns_a_record_set' || true
+      args:
+        chdir: "{{ provision_tf_workspace_dir }}"
+        executable: /bin/bash
+      register: provision_tf_dns_state_addrs
+      changed_when: false
+
+    - name: Destroy Terraform-managed DNS A records on destroy mode
+      ansible.builtin.command:
+        argv:
+          - terraform
+          - destroy
+          - -input=false
+          - -auto-approve
+          - -lock=false
+          - -no-color
+          - "-target={{ item }}"
+        chdir: "{{ provision_tf_workspace_dir }}"
+      loop: "{{ provision_tf_dns_state_addrs.stdout_lines | reject('equalto', '') | list }}"
+      when:
+        - provision_dns_tf_manage_a_records | default(false) | bool
+        - provision_mode == 'destroy'
+        - provision_tf_dns_state_addrs.stdout_lines | reject('equalto', '') | list | length > 0
+
+    - name: Keep Terraform-managed DNS A records in state on recreate
+      ansible.builtin.debug:
+        msg: >-
+          provision_dns_tf_manage_a_records=true and provision_mode=recreate:
+          leaving {{ provision_tf_dns_state_addrs.stdout_lines | reject('equalto', '') | list | length }}
+          dns_a_record_set address(es) in terraform state for 10_tf_apply to reconcile.
+      when:
+        - provision_dns_tf_manage_a_records | default(false) | bool
+        - provision_mode == 'recreate'
+        - provision_tf_dns_state_addrs.stdout_lines | reject('equalto', '') | list | length > 0
+
+    - name: Drop BIND-owned / legacy Terraform DNS A records from state
+      ansible.builtin.command:
+        argv:
+          - terraform
+          - state
+          - rm
+          - -lock=false
+          - -no-color
+          - "{{ item }}"
+        chdir: "{{ provision_tf_workspace_dir }}"
+      loop: "{{ provision_tf_dns_state_addrs.stdout_lines | reject('equalto', '') | list }}"
+      when:
+        - not (provision_dns_tf_manage_a_records | default(false) | bool)
+        - provision_tf_dns_state_addrs.stdout_lines | reject('equalto', '') | list | length > 0
+
+    - name: Note legacy Terraform DNS records removed from state
+      ansible.builtin.debug:
+        msg: >-
+          Removed {{ provision_tf_dns_state_addrs.stdout_lines | reject('equalto', '') | list | length }}
+          dns_a_record_set from terraform state without RFC2136 destroy
+          (provision_dns_tf_manage_a_records=false; apex A owned by BIND).
+      when:
+        - not (provision_dns_tf_manage_a_records | default(false) | bool)
+        - provision_tf_dns_state_addrs.stdout_lines | reject('equalto', '') | list | length > 0
+
+    - name: Mark terraform state reconcile completed for later apply step
+      ansible.builtin.file:
+        path: "{{ provision_tf_dns_destroyed_marker }}"
+        state: touch
+        mode: "0644"

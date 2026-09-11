@@ -1,0 +1,52 @@
+all:
+  children:
+    postgresql:
+      children:
+        pgsql_etcd_cluster:
+          hosts:
+            192.168.1.250:
+              hostname: etcd01.pgsql.example.com
+              provision:
+                vmid: "5700"
+                sockets: 1
+                cores: 2
+                memory: 4096
+                numa: false
+                clone: ubuntu-noble
+                disks:
+                  - size: "50"
+                    slot: 0
+                    storage: local-lvm
+        pgsql_cluster:
+          hosts:
+            192.168.1.251:
+              hostname: pg01.pgsql.example.com
+              provision:
+                vmid: "5701"
+                sockets: 1
+                cores: 4
+                memory: 8192
+                numa: false
+                clone: ubuntu-noble
+                disks:
+                  - size: "100"
+                    slot: 0
+                    storage: local-lvm
+        pgsql_lbs:
+          hosts:
+            192.168.1.252:
+              hostname: lb01.pgsql.example.com
+              provision:
+                vmid: "5702"
+                sockets: 1
+                cores: 2
+                memory: 4096
+                numa: false
+                clone: ubuntu-noble
+                disks:
+                  - size: "50"
+                    slot: 0
+                    storage: local-lvm
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+    ansible_ssh_user: localuser

@@ -1,0 +1,15 @@
+
+provision_stack: k8s
+provision_mode: apply
+
+provision_tf_state_git_push: false
+
+provision_inventory_group_map_k8s:
+  k8s_lbs: lbs_node
+  k8s_masters: masters_node
+  k8s_workers: workers_node
+
+provision_tf_module_map_k8s:
+  lbs_node: proxmox_lbs_node
+  masters_node: proxmox_masters_node
+  workers_node: proxmox_workers_node

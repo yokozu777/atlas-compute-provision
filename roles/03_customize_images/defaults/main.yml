@@ -1,0 +1,6 @@
+---
+# virt-customize inside the cloud image (libguestfs). false — rename only in build_workdir.
+build_cloud_image_customize_enabled: true
+# Packages for virt-customize --install (comma-separated in a single --install).
+build_cloud_image_packages:
+  - qemu-guest-agent

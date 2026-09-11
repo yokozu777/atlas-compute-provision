@@ -1,0 +1,7 @@
+---
+# Resolved for playbooks/provision_nodes.yaml from provision_stack.
+# SoT: provision_inventory_group_map_<stack> / provision_tf_module_map_<stack>
+# in group_vars/all/atlas-compute-provision.yml (or a site overlay). Use provision_stack: infra for infra-only leaves.
+
+provision_inventory_group_map: "{{ lookup('vars', 'provision_inventory_group_map_' ~ provision_stack) }}"
+provision_tf_module_map: "{{ lookup('vars', 'provision_tf_module_map_' ~ provision_stack) }}"

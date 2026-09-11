@@ -1,0 +1,158 @@
+---
+- name: Skip hypervisor cleaner in apply mode
+  ansible.builtin.debug:
+    msg: "provision_mode={{ provision_mode }} — skipping hypervisor cleaner; only Terraform diff will run"
+  when: provision_mode == 'apply'
+
+- name: Remove cluster VMs on hypervisor before Terraform reconcile
+  when: provision_mode in ['recreate', 'destroy']
+  block:
+    - name: Check terraform state file exists
+      ansible.builtin.stat:
+        path: "{{ provision_tf_state_repo_file }}"
+      delegate_to: localhost
+      run_once: true
+      register: provision_tf_state_file_stat
+
+    - name: Load terraform state from repository when present
+      ansible.builtin.set_fact:
+        provision_tf_state_json: "{{ lookup('file', provision_tf_state_repo_file) | from_json }}"
+      delegate_to: localhost
+      run_once: true
+      when: provision_tf_state_file_stat.stat.exists
+
+    - name: Use empty terraform state when state file is missing
+      ansible.builtin.set_fact:
+        provision_tf_state_json:
+          resources: []
+      delegate_to: localhost
+      run_once: true
+      when: not provision_tf_state_file_stat.stat.exists
+
+    - name: Extract VMIDs from terraform state
+      ansible.builtin.set_fact:
+        provision_tf_state_vmids: >-
+          {{
+            provision_tf_state_json.resources
+            | default([])
+            | selectattr('type', 'equalto', 'proxmox_vm_qemu')
+            | map(attribute='instances')
+            | flatten
+            | rejectattr('deposed', 'defined')
+            | map(attribute='attributes')
+            | map(attribute='vmid')
+            | map('string')
+            | list
+            | unique
+          }}
+      delegate_to: localhost
+      run_once: true
+
+    - name: Load cluster hosts for VMID fallback on first run
+      ansible.builtin.include_vars:
+        file: "{{ provision_hosts_file }}"
+        name: cluster_hosts
+      delegate_to: localhost
+      run_once: true
+      when: provision_tf_state_vmids | length == 0
+
+    - name: Build flat provision inventory group index
+      when: provision_tf_state_vmids | length == 0
+      delegate_to: localhost
+      run_once: true
+      block:
+        - ansible.builtin.include_tasks: ../../00_validate_provision/tasks/build_provision_inventory_index.yaml
+
+    - name: Reset hosts VMID list for fallback collection
+      ansible.builtin.set_fact:
+        provision_hosts_vmids: []
+      delegate_to: localhost
+      run_once: true
+      when: provision_tf_state_vmids | length == 0
+
+    - name: Collect VMIDs from hosts inventory groups
+      ansible.builtin.include_tasks: collect_hosts_vmids.yaml
+      loop: "{{ provision_inventory_group_map | dict2items }}"
+      loop_control:
+        loop_var: provision_group
+      when: provision_tf_state_vmids | length == 0
+
+    - name: Resolve VMIDs for hypervisor cleaner
+      ansible.builtin.set_fact:
+        provision_cleaner_vmids: >-
+          {{
+            provision_tf_state_vmids
+            if provision_tf_state_vmids | length > 0
+            else provision_hosts_vmids | default([]) | unique
+          }}
+      delegate_to: localhost
+      run_once: true
+
+    - name: Use hosts inventory because terraform state is empty (first run)
+      ansible.builtin.debug:
+        msg: >-
+          terraform state has no proxmox_vm_qemu resources — using VMIDs from
+          {{ provision_hosts_file }}: {{ provision_cleaner_vmids | join(', ') }}
+      when: provision_tf_state_vmids | length == 0
+      delegate_to: localhost
+      run_once: true
+
+    - name: Fail when no VMIDs found in terraform state or hosts inventory
+      ansible.builtin.fail:
+        msg: >-
+          provision_mode={{ provision_mode }} but no VMIDs found in terraform state
+          or {{ provision_hosts_file }}.
+      when: provision_cleaner_vmids | length == 0
+      delegate_to: localhost
+      run_once: true
+
+    - name: Stop and destroy VMs on hypervisor
+      ansible.builtin.shell: |
+        set -euo pipefail
+        cleaner() {
+          local vms="$1"
+          local status=0
+          if [ -f "/etc/pve/qemu-server/${vms}.conf" ]; then qm stop "$vms" || status=1; fi
+          sleep 5
+          if [ -f "/etc/pve/qemu-server/${vms}.conf" ]; then qm destroy "$vms" || status=1; fi
+          sleep 2
+          pvesm free "{{ provision_vm_cloudinit_storage }}:${vms}/vm-${vms}-cloudinit.qcow2" || true
+          sleep 2
+          pvesm free "{{ provision_vm_cloudinit_storage }}:${vms}/vm-${vms}-disk-0.qcow2" || true
+          sleep 2
+          pvesm free "{{ provision_vm_cloudinit_storage }}:${vms}/vm-${vms}-disk-1.qcow2" || true
+          sleep 2
+          pvesm free "{{ provision_vm_cloudinit_storage }}:${vms}/vm-${vms}-cloudinit.raw" || true
+          return "$status"
+        }
+
+        failed=0
+        for vms in ${VMIDS}; do
+          [ -n "$vms" ] || continue
+          cleaner "$vms" || failed=1 &
+        done
+        wait
+        exit "$failed"
+      environment:
+        VMIDS: "{{ provision_cleaner_vmids | join(' ') }}"
+      args:
+        executable: /bin/bash
+
+    - name: Verify VMs were removed from hypervisor after cleaner
+      ansible.builtin.shell: |
+        set -euo pipefail
+        remaining=""
+        for vms in ${VMIDS}; do
+          [ -n "$vms" ] || continue
+          if [ -f "/etc/pve/qemu-server/${vms}.conf" ]; then
+            remaining="${remaining} ${vms}"
+          fi
+        done
+        if [ -n "${remaining// /}" ]; then
+          echo "VM configs still present for VMIDs:${remaining}" >&2
+          exit 1
+        fi
+      environment:
+        VMIDS: "{{ provision_cleaner_vmids | join(' ') }}"
+      args:
+        executable: /bin/bash

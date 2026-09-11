@@ -1,0 +1,26 @@
+---
+- name: Check customized template image exists in build workdir
+  ansible.builtin.stat:
+    path: "{{ build_workdir }}/{{ item.image_file }}"
+  loop: "{{ build_active_templates }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: build_image_stats
+
+- name: Fail when expected template image is missing
+  ansible.builtin.fail:
+    msg: >-
+      Expected image {{ item.item.image_file }} for template {{ item.item.name }}
+      not found in {{ build_workdir }} — run 03_customize_images first
+  loop: "{{ build_image_stats.results }}"
+  when: not item.stat.exists
+
+- name: Upload template images to Proxmox upload directory
+  ansible.builtin.copy:
+    src: "{{ build_workdir }}/{{ item.image_file }}"
+    dest: "{{ provision_pve_upload_dir }}/{{ item.image_file }}"
+    mode: "0644"
+  loop: "{{ build_active_templates }}"
+  loop_control:
+    label: "{{ item.name }}"
+  delegate_to: "{{ provision_pve_inventory_name }}"

@@ -1,0 +1,14 @@
+---
+# Flatten inventory for provision:
+# - direct groups under all.children (k8s, jslave, mysql, ...)
+# - nested groups under stack parent groups (postgresql.children, redis.children, ...)
+- name: Initialize provision inventory group index from top-level groups
+  ansible.builtin.set_fact:
+    provision_inventory_groups_index: "{{ cluster_hosts.all.children }}"
+
+- name: Merge nested inventory group children into provision index
+  ansible.builtin.set_fact:
+    provision_inventory_groups_index: >-
+      {{ provision_inventory_groups_index | combine(item.value.children) }}
+  loop: "{{ cluster_hosts.all.children | dict2items }}"
+  when: item.value.children is defined

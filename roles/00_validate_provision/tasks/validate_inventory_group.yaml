@@ -1,0 +1,66 @@
+---
+- name: Validate provision inventory group exists in hosts
+  ansible.builtin.assert:
+    that:
+      - provision_group.key in provision_inventory_groups_index
+    fail_msg: >-
+      Inventory group '{{ provision_group.key }}' from provision_inventory_group_map
+      is missing in {{ provision_hosts_file }}
+
+- name: Validate inventory group is not empty
+  ansible.builtin.assert:
+    that:
+      - provision_inventory_groups_index[provision_group.key].hosts | default({}) | length > 0
+    fail_msg: >-
+      Inventory group '{{ provision_group.key }}' has no hosts in {{ provision_hosts_file }}
+
+- name: Validate TF module mapping for inventory group
+  ansible.builtin.assert:
+    that:
+      - provision_group.value in provision_tf_module_map
+    fail_msg: >-
+      provision_inventory_group_map value '{{ provision_group.value }}' for group
+      '{{ provision_group.key }}' is missing in provision_tf_module_map
+
+- name: Validate provision block on each host
+  ansible.builtin.assert:
+    that:
+      - host_entry.value.provision is defined
+      - host_entry.value.provision.vmid is defined
+      - host_entry.value.provision.vmid | string | length > 0
+      - host_entry.value.provision.sockets is defined
+      - host_entry.value.provision.cores is defined
+      - host_entry.value.provision.memory is defined
+      - host_entry.value.provision.disks is defined
+      - host_entry.value.provision.disks | length > 0
+      - host_entry.value.provision.clone is defined
+      - host_entry.value.provision.clone | length > 0
+      # Terraform clones by PVE template name. Optional allowlist only when catalog set.
+      - >
+          (provision_pve_templates | default({}) | length == 0)
+          or (host_entry.value.provision.clone in provision_pve_templates)
+      - host_entry.value.hostname is defined
+      - host_entry.value.hostname | length > 0
+    fail_msg: >-
+      Host {{ host_entry.key }} in group '{{ provision_group.key }}' is missing required
+      hostname or provision.* fields (vmid, sockets, cores, memory, disks, clone).
+      clone is the PVE template name passed to Terraform (e.g. ubuntu-base).
+      When provision_pve_templates is set it is an optional allowlist of those names
+      (keys={{ provision_pve_templates.keys() | list if (provision_pve_templates | default({}) | length > 0) else 'omit catalog' }}).
+      id/image_url are required only on the templates build path (factory leaf).
+      If renaming inventory groups, keep provision_inventory_group_map_<stack> keys in sync
+      (see examples/rename_smoke/).
+  loop: "{{ provision_inventory_groups_index[provision_group.key].hosts | dict2items }}"
+  loop_control:
+    loop_var: host_entry
+
+- name: Collect VMIDs from inventory group
+  ansible.builtin.set_fact:
+    provision_collected_vmids: >-
+      {{
+        provision_collected_vmids | default([])
+        + [host_entry.value.provision.vmid | string]
+      }}
+  loop: "{{ provision_inventory_groups_index[provision_group.key].hosts | dict2items }}"
+  loop_control:
+    loop_var: host_entry

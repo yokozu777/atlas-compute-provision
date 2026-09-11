@@ -1,0 +1,90 @@
+---
+# Stable product defaults for atlas-compute-provision (rarely overridden per leaf).
+# Loaded for every play under playbooks/ (alongside provision_stack_maps.yml).
+# Site overlays (clusterctl group_vars/all/atlas-compute-provision.yml) win via -e @.
+#
+# Role defaults under roles/*/defaults/main.yml mirror the same knobs where a role
+# is the natural owner (build timeouts, workspace paths).
+
+# --- PVE SSH inventory helpers ---
+provision_pve_user: root
+provision_pve_inventory_name: pve
+provision_pve_inventory_group: proxmox
+provision_pve_python_interpreter: /usr/bin/python3
+provision_pve_upload_dir: /mnt/ramdisk
+
+# --- Network formulas (override gateway / prefix at the leaf) ---
+provision_network_prefix: "24"
+provision_nameserver: "{{ provision_gateway }}"
+provision_searchdomain: "{{ dns_domain_suffix }}"
+
+# --- Proxmox API / Terraform providers ---
+provision_proxmox_api_url: "https://{{ provision_pve_host }}:8006/api2/json"
+provision_proxmox_tls_insecure: true
+provision_proxmox_parallel: 10
+provision_tf_parallelism: 3
+provision_tf_provider_proxmox_version: "3.0.2-rc08"
+provision_tf_provider_dns_version: "3.5.0"
+provision_tf_provider_local_version: "2.8.0"
+provision_tf_plugin_dir: "{{ lookup('env', 'HOME') }}/.terraform.d/plugins"
+provision_tf_plugin_cache_dir: "{{ lookup('env', 'HOME') }}/.terraform.d/plugin-cache"
+
+# --- DNS RFC2136 (secrets + server IP stay at the leaf) ---
+provision_dns_zone: "{{ dns_domain_suffix }}."
+provision_dns_key_name: "{{ dns_domain_suffix }}."
+provision_dns_key_algorithm: hmac-sha256
+provision_dns_transport: tcp4
+provision_dns_tf_manage_a_records: false
+provision_dns_a_ttl: 300
+
+# --- Guest disk / clone defaults (lab may override storage/cache) ---
+provision_vm_full_clone: false
+provision_vm_cloudinit_storage: local-lvm
+provision_vm_disk_cache: none
+provision_vm_disk_format: raw
+provision_vm_network_bridge: vmbr0
+provision_vm_ciuser: root
+
+# --- TF state layout (ADR 001 Phase 1 — variant A) ---
+# Paths; repo URL / push stay at the leaf.
+#   local_dir=…/tfstate-repo, prefix=tfstate, cluster_path=tfstate/{{ cluster_id }}
+# Scratch tf_workspace stays under cluster_workspace_root (never durable SoT).
+# See docs/adr/001-tfstate-repo-prefix.md
+provision_tf_state_branch: main
+provision_tf_state_local_dir: "{{ atlas_cluster_root | default('.', true) }}/tfstate-repo"
+provision_tf_state_repo_prefix: tfstate
+provision_tf_state_cluster_path: "{{ provision_tf_state_repo_prefix }}/{{ cluster_id | default(cluster_workspace_id, true) }}"
+provision_tf_state_repo_dir: "{{ provision_tf_state_local_dir }}/{{ provision_tf_state_cluster_path }}"
+provision_tf_state_repo_file: "{{ provision_tf_state_repo_dir }}/terraform.tfstate"
+provision_tf_workspace_dir: "{{ cluster_workspace_root }}/tf_workspace"
+provision_tf_workspace_state_file: "{{ provision_tf_workspace_dir }}/terraform.tfstate"
+provision_tf_state_git_push: false
+# Opt-in (CI): discard dirty tracked/untracked files under repo_prefix only.
+# Never whole-repo reset --hard on inventory checkouts (ADR 001 Phase 6).
+provision_tf_state_git_discard_local: false
+provision_generated_variables_tf: "{{ cluster_workspace_root }}/generated/variables.tf"
+
+# --- Template build (override only when tuning build) ---
+build_workdir: "{{ cluster_workspace_root }}/build/workspace"
+build_state_file: "{{ cluster_workspace_root }}/build/build_templates_state.json"
+build_template_memory_mb: 2048
+build_force_rebuild: false
+build_cloud_image_download_timeout: 3600
+build_cloud_image_upload_timeout: 7200
+build_cloud_image_customize_enabled: false
+build_cloud_image_packages:
+  - qemu-guest-agent
+
+# --- Wait SSH after TF apply ---
+provision_wait_ssh_connect_timeout: 10
+provision_wait_ssh_sleep: 5
+provision_wait_ssh_delay: 10
+provision_wait_ssh_timeout: 600
+
+# --- Rook data-disk helpers (k8s stacks; unused on infra-only leaves) ---
+provision_rook_database_size_mb: "1024"
+provision_rook_data_disk_index: 1
+provision_rook_wwn_path_prefix: "/dev/disk/by-id/wwn-"
+
+# --- Validate ---
+provision_enforce_live_secrets: false

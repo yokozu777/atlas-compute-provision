@@ -1,0 +1,80 @@
+# Local / generated (do not commit)
+inventory.yml
+hosts
+!hosts.example.yml
+!**/hosts.example.yml
+pub_keys/
+workspace/
+.ansible/
+.ansible_facts_cache/
+*.retry
+vars-file.yml
+ansible_local_execute.cfg
+secrets.yml
+**/secrets.yml
+# Product secrets overlays (Vault in git) — never ignore.
+!**/*.secrets.yml
+!**/*.secrets.yaml
+# Role task files named secrets.yml are code (CHANGEME gate), not credentials.
+!roles/**/tasks/secrets.yml
+*.vault
+**/vault.yml
+
+# Terraform local state / providers (never commit)
+.terraform/
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Host overrides (keep example only)
+host_vars/*
+!host_vars/example.yml
+!host_vars/*.example.yml
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+build/
+venv/
+.venv/
+ENV/
+env/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs / temp
+*.log
+logs/
+*.tmp
+*.bak
+*.backup
+*.token
+*.img
+*.qcow2
+*.qcow2.xz
+*.raw
+
+# OS
+.DS_Store
+Thumbs.db

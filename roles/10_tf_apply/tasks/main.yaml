@@ -1,0 +1,87 @@
+---
+- name: Prepare terraform workspace
+  ansible.builtin.include_tasks: prepare_workspace.yaml
+
+- name: Check pulled terraform.tfstate in state repository
+  ansible.builtin.stat:
+    path: "{{ provision_tf_state_repo_file }}"
+  register: provision_pulled_tf_state
+
+- name: Fail when cluster terraform state file is missing for recreate or destroy
+  ansible.builtin.fail:
+    msg: >-
+      provision_mode={{ provision_mode }} requires terraform.tfstate at
+      {{ provision_tf_state_repo_file }} — run 07_tf_state_pull first
+  when:
+    - provision_mode in ['recreate', 'destroy']
+    - not provision_pulled_tf_state.stat.exists
+
+- name: Install pulled terraform.tfstate into workspace
+  ansible.builtin.copy:
+    src: "{{ provision_tf_state_repo_file }}"
+    dest: "{{ provision_tf_workspace_state_file }}"
+    mode: "0600"
+  when:
+    - provision_pulled_tf_state.stat.exists
+    - not provision_tf_dns_destroyed_marker_stat.stat.exists
+
+- name: Skip terraform apply after full destroy
+  ansible.builtin.debug:
+    msg: "provision_mode=destroy — infrastructure removed; skipping terraform apply"
+  when: provision_mode == 'destroy'
+
+- name: Terraform init workspace using preinstalled provider directory
+  ansible.builtin.command:
+    argv:
+      - terraform
+      - init
+      - -input=false
+      - -no-color
+      - "-plugin-dir={{ provision_tf_plugin_dir }}"
+    chdir: "{{ provision_tf_workspace_dir }}"
+  register: provision_tf_init_preinstalled
+  changed_when: >-
+    'Terraform has been successfully initialized' in provision_tf_init_preinstalled.stdout
+  when:
+    - provision_mode in ['apply', 'recreate']
+    - provision_tf_plugins_preinstalled | default(false) | bool
+
+- name: Ensure Terraform plugin cache directory exists
+  ansible.builtin.file:
+    path: "{{ provision_tf_plugin_cache_dir }}"
+    state: directory
+    mode: "0755"
+  when:
+    - provision_mode in ['apply', 'recreate']
+    - not (provision_tf_plugins_preinstalled | default(false) | bool)
+
+- name: Terraform init workspace with plugin download cache
+  ansible.builtin.command:
+    cmd: terraform init -input=false -no-color
+    chdir: "{{ provision_tf_workspace_dir }}"
+  environment:
+    TF_PLUGIN_CACHE_DIR: "{{ provision_tf_plugin_cache_dir }}"
+  register: provision_tf_init_cached
+  changed_when: >-
+    'Terraform has been successfully initialized' in provision_tf_init_cached.stdout
+  when:
+    - provision_mode in ['apply', 'recreate']
+    - not (provision_tf_plugins_preinstalled | default(false) | bool)
+
+- name: Terraform apply
+  when: provision_mode in ['apply', 'recreate']
+  community.general.terraform:
+    project_path: "{{ provision_tf_workspace_dir }}"
+    state: present
+    force_init: false
+    parallelism: "{{ provision_tf_parallelism | default(3) }}"
+    plugin_paths:
+      - "{{ provision_tf_plugin_dir }}"
+
+- name: Remove DNS destroy marker after successful apply
+  ansible.builtin.file:
+    path: "{{ provision_tf_dns_destroyed_marker }}"
+    state: absent
+  when:
+    - provision_mode == 'recreate'
+    - provision_tf_dns_destroyed_marker_stat.stat.exists

@@ -1,0 +1,110 @@
+---
+- name: Set template VM facts from provision_pve_templates
+  ansible.builtin.set_fact:
+    build_pve_templates: "{{ build_pve_templates_list }}"
+  vars:
+    build_pve_templates_list: >-
+      {%- set result = [] -%}
+      {%- for t in build_active_templates -%}
+      {%- set _ = result.append({
+        'name': t.name,
+        'id': t.id,
+        'img': provision_pve_upload_dir ~ '/' ~ t.image_file
+      }) -%}
+      {%- endfor -%}
+      {{ result }}
+
+- name: Destroy template VMs and unreferenced disks
+  ansible.builtin.command:
+    cmd: "qm destroy {{ item.id }} --destroy-unreferenced-disks 1 --purge 1"
+  loop: "{{ build_pve_templates }}"
+  ignore_errors: true
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Create template VMs
+  ansible.builtin.command:
+    cmd: >-
+      qm create {{ item.id }} --memory {{ build_template_memory_mb | default(2048) }}
+      --name {{ item.name }} --net0 virtio,bridge={{ provision_vm_network_bridge }}
+  loop: "{{ build_pve_templates }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Import disks to template VMs
+  ansible.builtin.command:
+    cmd: "qm importdisk {{ item.id }} {{ item.img }} {{ provision_vm_cloudinit_storage }}"
+  loop: "{{ build_pve_templates }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Read imported disk volume id from qm config
+  ansible.builtin.command:
+    cmd: "qm config {{ item.id }}"
+  loop: "{{ build_pve_templates }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: build_template_qm_config
+  changed_when: false
+
+- name: Set SCSI controller and attach imported disk to template VMs
+  ansible.builtin.command:
+    argv:
+      - qm
+      - set
+      - "{{ item.item.id | string }}"
+      - --scsihw
+      - virtio-scsi-pci
+      - --scsi0
+      - "{{ (item.stdout_lines | select('match', '^unused0:') | list | first | default('')) | regex_replace('^unused0:\\s+', '') }}"
+      - --boot
+      - order=scsi0
+  loop: "{{ build_template_qm_config.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+  failed_when: >-
+    {{ ((item.stdout_lines | select('match', '^unused0:') | list | first | default(''))
+        | regex_replace('^unused0:\\s+', '')) | length == 0 }}
+
+- name: Attach cloudinit disk to template VMs
+  ansible.builtin.command:
+    cmd: "qm set {{ item.id }} --ide2 {{ provision_vm_cloudinit_storage }}:cloudinit"
+  loop: "{{ build_pve_templates }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Convert template VMs to Proxmox templates
+  ansible.builtin.command:
+    cmd: "qm template {{ item.id }}"
+  loop: "{{ build_pve_templates }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Disable cloud-init upgrade on template VMs
+  ansible.builtin.command:
+    cmd: "qm set {{ item.id }} --ciupgrade 0"
+  loop: "{{ build_pve_templates }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Disable memory balloon on template VMs
+  ansible.builtin.command:
+    cmd: "qm set {{ item.id }} --balloon 0"
+  loop: "{{ build_pve_templates }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Disable tablet device on template VMs
+  ansible.builtin.command:
+    cmd: "qm set {{ item.id }} --tablet 0"
+  loop: "{{ build_pve_templates }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Remove uploaded template images from Proxmox upload directory
+  ansible.builtin.file:
+    path: "{{ provision_pve_upload_dir }}/{{ item.image_file }}"
+    state: absent
+  loop: "{{ build_active_templates }}"
+  loop_control:
+    label: "{{ item.name }}"

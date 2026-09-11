@@ -1,0 +1,41 @@
+---
+- name: Resolve stack path in atlas-compute-provision
+  ansible.builtin.set_fact:
+    provision_stack_path: "{{ role_path }}/../../stacks/{{ provision_stack }}"
+
+- name: Load cluster hosts inventory for template rendering
+  ansible.builtin.include_vars:
+    file: "{{ provision_hosts_file }}"
+    name: cluster_hosts
+
+- name: Build flat provision inventory group index
+  ansible.builtin.include_tasks: ../00_validate_provision/tasks/build_provision_inventory_index.yaml
+
+- name: Read SSH public key for Terraform cloud-init
+  ansible.builtin.slurp:
+    src: "{{ provision_ssh_public_key_file }}"
+  register: provision_ssh_public_key_slurp
+
+- name: Set SSH public key fact
+  ansible.builtin.set_fact:
+    provision_ssh_public_key: "{{ provision_ssh_public_key_slurp.content | b64decode | trim }}"
+
+- name: Generate variables.tf from stack template
+  ansible.builtin.template:
+    src: "{{ provision_stack_path }}/templates/variables.tf.j2"
+    dest: "{{ provision_generated_variables_tf }}"
+    mode: "0644"
+
+- name: Check optional stack output templates
+  ansible.builtin.stat:
+    path: "{{ provision_stack_path }}/templates/{{ item.template }}"
+  loop: "{{ provision_stack_extra_outputs | default([]) }}"
+  register: provision_stack_extra_template_stats
+
+- name: Generate optional stack outputs
+  ansible.builtin.template:
+    src: "{{ provision_stack_path }}/templates/{{ item.item.template }}"
+    dest: "{{ item.item.dest }}"
+    mode: "0644"
+  loop: "{{ provision_stack_extra_template_stats.results }}"
+  when: item.stat.exists

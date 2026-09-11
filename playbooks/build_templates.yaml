@@ -1,0 +1,225 @@
+---
+# Proxmox cloud templates (atlas-compute-provision roles 00–05)
+# Vars: group_vars/all/atlas-compute-provision.yml + playbooks/group_vars/all/provision_defaults.yml
+#       (./run.sh templates) or optional -e @vars-build.yml
+# Standalone: ./run.sh templates [--tags …]
+
+- hosts: localhost
+  gather_facts: false
+  tags: [00_ensure_workspace]
+  roles:
+    - role: 00_ensure_workspace
+
+- hosts: localhost
+  pre_tasks:
+    - name: Assert build template variables are set
+      tags: &build_stage_tags
+        - 00_check_pve_templates
+        - 01_prepare_system
+        - 02_download_images
+        - 03_customize_images
+        - 04_upload_images
+        - 05_create_pve_templates
+      ansible.builtin.assert:
+        that:
+          - provision_pve_templates is defined
+          - provision_pve_templates | length > 0
+          - build_workdir | default('') | length > 0
+          - build_state_file | default('') | length > 0
+          - provision_pve_upload_dir | default('') | length > 0
+          - provision_pve_host | default('') | length > 0
+          - provision_pve_user | default('') | length > 0
+          - provision_pve_ssh_password | default('') | length > 0
+          - provision_pve_inventory_name | default('') | length > 0
+          - provision_pve_inventory_group | default('') | length > 0
+          - provision_vm_cloudinit_storage | default('') | length > 0
+          - provision_vm_network_bridge | default('') | length > 0
+        fail_msg: >-
+          Build requires provision_pve_templates, build_workdir, provision_pve_upload_dir
+          and provision_pve_* from group_vars/all/atlas-compute-provision.yml (or -e @vars-build.yml)
+
+    - name: Assert template catalog IDs are unique
+      tags: *build_stage_tags
+      ansible.builtin.assert:
+        that:
+          - provision_pve_templates | length > 0
+          - provision_pve_templates.values() | map(attribute='id') | list | length ==
+            provision_pve_templates.values() | map(attribute='id') | unique | list | length
+        fail_msg: provision_pve_templates must have unique id values per key
+
+    - name: Assert each template has id + image_url (build/factory catalog)
+      tags: *build_stage_tags
+      ansible.builtin.assert:
+        that:
+          - item.value.id is defined
+          - item.value.id | string | trim | length > 0
+          - item.value.image_url | default('') | trim | length > 0
+          - (item.value.image_url | basename) | length > 0
+        fail_msg: >-
+          provision_pve_templates.{{ item.key }} needs id + image_url.
+          PVE name = catalog key; image_file = basename(image_url).
+          (Provision/clone does not require this catalog — only this templates build path does.)
+      loop: "{{ provision_pve_templates | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+
+    - name: Resolve provision_pve_templates (name/image_file from key/url)
+      tags: *build_stage_tags
+      ansible.builtin.set_fact:
+        provision_pve_templates: "{{ provision_pve_templates | resolve_pve_templates }}"
+
+    - name: Register Proxmox hypervisor in runtime inventory
+      tags:
+        - 00_check_pve_templates
+        - 04_upload_images
+        - 05_create_pve_templates
+      ansible.builtin.add_host:
+        name: "{{ provision_pve_inventory_name }}"
+        groups: "{{ provision_pve_inventory_group | default('proxmox') }}"
+        ansible_host: "{{ provision_pve_host }}"
+        ansible_user: "{{ provision_pve_user }}"
+        ansible_ssh_user: "{{ provision_pve_user }}"
+        ansible_ssh_pass: "{{ provision_pve_ssh_password }}"
+        ansible_python_interpreter: "{{ provision_pve_python_interpreter }}"
+
+- hosts: "{{ provision_pve_inventory_group | default('proxmox') }}"
+  gather_facts: false
+  remote_user: "{{ provision_pve_user }}"
+  roles:
+    - role: 00_check_pve_templates
+      tags:
+        - 00_check_pve_templates
+
+- hosts: localhost
+  tasks:
+    - name: Sync template check results from PVE to localhost
+      tags:
+        - 00_check_pve_templates
+      ansible.builtin.set_fact:
+        build_templates_rebuild: "{{ hostvars[provision_pve_inventory_name]['build_templates_rebuild'] | default([]) }}"
+        build_templates_skip: "{{ hostvars[provision_pve_inventory_name]['build_templates_skip'] | default([]) }}"
+        build_skip_all: "{{ hostvars[provision_pve_inventory_name]['build_skip_all'] | default(false) }}"
+        build_active_templates: "{{ hostvars[provision_pve_inventory_name]['build_templates_rebuild'] | default([]) }}"
+
+    - name: Persist build state for later pipeline stages
+      tags:
+        - 00_check_pve_templates
+      ansible.builtin.copy:
+        content: >-
+          {{
+            {
+              'build_templates_rebuild': build_templates_rebuild,
+              'build_templates_skip': build_templates_skip,
+              'build_skip_all': build_skip_all,
+              'build_active_templates': build_active_templates
+            } | to_nice_json
+          }}
+        dest: "{{ build_state_file }}"
+        mode: "0644"
+
+    - name: Load build state from previous check
+      tags: &build_resume_tags
+        - 02_download_images
+        - 03_customize_images
+        - 04_upload_images
+        - 05_create_pve_templates
+      ansible.builtin.slurp:
+        src: "{{ build_state_file }}"
+      register: build_state_raw
+
+    - name: Apply build state from file
+      tags: *build_resume_tags
+      ansible.builtin.set_fact:
+        build_templates_rebuild: "{{ (build_state_raw.content | b64decode | from_json).build_templates_rebuild | default([]) }}"
+        build_templates_skip: "{{ (build_state_raw.content | b64decode | from_json).build_templates_skip | default([]) }}"
+        build_skip_all: "{{ (build_state_raw.content | b64decode | from_json).build_skip_all | default(false) }}"
+        build_active_templates: "{{ (build_state_raw.content | b64decode | from_json).build_active_templates | default([]) }}"
+
+    - name: Sync build facts to Proxmox for stages 04–05
+      tags:
+        - 00_check_pve_templates
+        - 04_upload_images
+        - 05_create_pve_templates
+      ansible.builtin.set_fact:
+        build_templates_rebuild: "{{ build_templates_rebuild }}"
+        build_templates_skip: "{{ build_templates_skip }}"
+        build_skip_all: "{{ build_skip_all }}"
+        build_active_templates: "{{ build_active_templates }}"
+      delegate_to: "{{ provision_pve_inventory_name }}"
+      delegate_facts: true
+
+    - name: End build pipeline when all templates are OK
+      tags: *build_stage_tags
+      ansible.builtin.meta: end_play
+      when: build_skip_all | bool
+
+    - name: Clean build workspace before template rebuild
+      tags:
+        - 01_prepare_system
+      ansible.builtin.file:
+        path: "{{ build_workdir }}"
+        state: absent
+      when: build_active_templates | length > 0
+
+    - name: Ensure build workspace exists when rebuild is required
+      tags:
+        - 01_prepare_system
+        - 02_download_images
+        - 03_customize_images
+        - 04_upload_images
+        - 05_create_pve_templates
+      ansible.builtin.file:
+        path: "{{ build_workdir }}"
+        state: directory
+        mode: "0755"
+      when: build_active_templates | length > 0
+
+- hosts: localhost
+  become: true
+  roles:
+    - role: 01_prepare_system
+      tags:
+        - 01_prepare_system
+      when: build_active_templates | length > 0
+    - role: 02_download_images
+      tags:
+        - 02_download_images
+      when: build_active_templates | length > 0
+    - role: 03_customize_images
+      tags:
+        - 03_customize_images
+      when: build_active_templates | length > 0
+
+- hosts: localhost
+  roles:
+    - role: 04_upload_images
+      tags:
+        - 04_upload_images
+      when: build_active_templates | length > 0
+
+- hosts: "{{ provision_pve_inventory_group | default('proxmox') }}"
+  gather_facts: false
+  remote_user: "{{ provision_pve_user }}"
+  roles:
+    - role: 05_create_pve_templates
+      tags:
+        - 05_create_pve_templates
+      when: build_active_templates | length > 0
+
+- hosts: localhost
+  tasks:
+    - name: Clean build workspace after template build completed
+      tags:
+        - 05_create_pve_templates
+      ansible.builtin.file:
+        path: "{{ build_workdir }}"
+        state: absent
+      when: build_active_templates | default([]) | length > 0
+
+    - name: Remove build state file after template build completed
+      tags:
+        - 05_create_pve_templates
+      ansible.builtin.file:
+        path: "{{ build_state_file }}"
+        state: absent
+      when: build_active_templates | default([]) | length > 0

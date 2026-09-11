@@ -1,0 +1,17 @@
+# Stack-map overlay for examples/rename_smoke/hosts.example.yml
+# Inventory group renamed: jslave → my_build_agents
+# TF variable / module names stay the jenkins stack defaults.
+
+provision_stack: jenkins
+provision_mode: apply
+
+provision_tf_state_git_push: false
+
+provision_inventory_group_map_jenkins:
+  my_build_agents: jslave_vms
+
+provision_tf_module_map_jenkins:
+  jslave_vms: proxmox_jslaves
+
+# Optional SSH-wait override (colon-separated). Must match hosts groups.
+provision_wait_hosts: my_build_agents

@@ -1,0 +1,98 @@
+---
+- name: Resolve stack path in atlas-compute-provision
+  ansible.builtin.set_fact:
+    provision_stack_path: "{{ role_path }}/../../stacks/{{ provision_stack }}"
+    provision_atlas_modules_path: "{{ role_path }}/../../modules/proxmox_vm"
+    provision_atlas_shared_path: "{{ role_path }}/../../stacks/_shared"
+    provision_tf_plugin_dir: "{{ provision_tf_plugin_dir | default(lookup('env', 'HOME') ~ '/.terraform.d/plugins') }}"
+    provision_tf_plugin_cache_dir: "{{ provision_tf_plugin_cache_dir | default(lookup('env', 'HOME') ~ '/.terraform.d/plugin-cache') }}"
+    provision_tf_dns_destroyed_marker: "{{ provision_tf_workspace_dir }}/.provision_tf_dns_destroyed"
+
+- name: Find preinstalled Proxmox Terraform provider
+  ansible.builtin.find:
+    paths: "{{ provision_tf_plugin_dir }}/registry.terraform.io/telmate/proxmox/{{ provision_tf_provider_proxmox_version }}/linux_amd64"
+    patterns: terraform-provider-proxmox*
+    file_type: any
+  register: provision_tf_proxmox_plugin_find
+
+- name: Find preinstalled DNS Terraform provider
+  ansible.builtin.find:
+    paths: "{{ provision_tf_plugin_dir }}/registry.terraform.io/hashicorp/dns/{{ provision_tf_provider_dns_version }}/linux_amd64"
+    patterns: terraform-provider-dns*
+    file_type: any
+  register: provision_tf_dns_plugin_find
+
+- name: Note whether Terraform providers are preinstalled locally
+  ansible.builtin.set_fact:
+    provision_tf_plugins_preinstalled: >-
+      {{
+        (provision_tf_proxmox_plugin_find.matched | default(0) | int > 0)
+        and (provision_tf_dns_plugin_find.matched | default(0) | int > 0)
+      }}
+
+- name: Check DNS destroy marker from prior recreate or destroy step
+  ansible.builtin.stat:
+    path: "{{ provision_tf_dns_destroyed_marker }}"
+  register: provision_tf_dns_destroyed_marker_stat
+
+- name: Remove DNS destroy marker on fresh apply
+  ansible.builtin.file:
+    path: "{{ provision_tf_dns_destroyed_marker }}"
+    state: absent
+  when: provision_mode == 'apply'
+
+- name: Ensure terraform workspace directory exists
+  ansible.builtin.file:
+    path: "{{ provision_tf_workspace_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Remove stale generated terraform files from workspace
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "{{ provision_tf_workspace_dir }}/main.tf"
+    - "{{ provision_tf_workspace_dir }}/providers.tf"
+    - "{{ provision_tf_workspace_dir }}/variables.tf"
+    - "{{ provision_tf_workspace_dir }}/modules/proxmox_vm/main.tf"
+
+- name: Remove workspace terraform.tfstate before loading repository copy
+  ansible.builtin.file:
+    path: "{{ provision_tf_workspace_state_file }}"
+    state: absent
+  when: not (provision_tf_preserve_workspace_state | default(provision_tf_dns_destroyed_marker_stat.stat.exists | default(false)) | bool)
+
+- name: Render root providers.tf from shared template
+  ansible.builtin.template:
+    src: "{{ provision_atlas_shared_path }}/providers.tf.j2"
+    dest: "{{ provision_tf_workspace_dir }}/providers.tf"
+    mode: "0644"
+
+- name: Render stack main.tf from template
+  ansible.builtin.template:
+    src: "{{ provision_stack_path }}/main.tf.j2"
+    dest: "{{ provision_tf_workspace_dir }}/main.tf"
+    mode: "0644"
+
+- name: Copy generated variables.tf into terraform workspace
+  ansible.builtin.copy:
+    src: "{{ provision_generated_variables_tf }}"
+    dest: "{{ provision_tf_workspace_dir }}/variables.tf"
+    mode: "0644"
+
+- name: Ensure proxmox_vm module directory exists in workspace
+  ansible.builtin.file:
+    path: "{{ provision_tf_workspace_dir }}/modules/proxmox_vm"
+    state: directory
+    mode: "0755"
+
+- name: Copy proxmox_vm module into workspace
+  ansible.builtin.copy:
+    src: "{{ provision_atlas_modules_path }}/"
+    dest: "{{ provision_tf_workspace_dir }}/modules/proxmox_vm/"
+    mode: "0644"
+
+- name: Reconcile terraform lock file for preinstalled provider mirror
+  ansible.builtin.include_tasks: reconcile_plugin_lock.yaml
+  when: provision_tf_plugins_preinstalled | default(false) | bool

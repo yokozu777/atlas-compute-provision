@@ -1,0 +1,57 @@
+# Optional -e overlay for template builds without inventory group_vars.
+# Prefer the standalone product path:
+#   ./run.sh templates
+# which loads group_vars/all/atlas-compute-provision.yml (SoT for workspace + provision_pve_* + templates).
+#
+# This file is kept for ad-hoc ansible-playbook invocations:
+#   ansible-playbook playbooks/build_templates.yaml -e @vars-build.yml --tags …
+#
+# Do not put live secrets here — use EXTRA_VARS_FILE / vault.
+---
+dns_domain_suffix: example.com
+cluster_workspace_id: "{{ lookup('env', 'CLUSTER_WORKSPACE_ID') | default('build.' ~ dns_domain_suffix, true) }}"
+cluster_workspace_parent: "{{ lookup('env', 'CLUSTER_WORKSPACE_PARENT') | default('./workspace', true) }}"
+cluster_workspace_root: "{{ lookup('env', 'CLUSTER_WORKSPACE_ROOT') | default(cluster_workspace_parent ~ '/' ~ cluster_workspace_id, true) }}"
+controller_workspace: "{{ cluster_workspace_root }}/controller-state"
+controller_manifests_dir: "{{ controller_workspace }}/manifests"
+controller_reports_dir: "{{ controller_workspace }}/reports"
+controller_kubeconfig: "{{ controller_workspace }}/kubeconfig/admin.conf"
+controller_python_venv: "{{ controller_workspace }}/venv"
+controller_bin_dir: "{{ controller_workspace }}/bin"
+controller_helm_config_dir: "{{ controller_workspace }}/helm-config"
+controller_ca_cert_dir: "{{ controller_workspace }}/certs"
+controller_staging_dir: "{{ controller_workspace }}/staging"
+controller_secrets_dir: "{{ controller_workspace }}/secrets"
+k8s_control_plane_scripts_dir: "{{ controller_workspace }}/scripts"
+
+provision_pve_host: "pve.{{ dns_domain_suffix }}"
+provision_pve_user: root
+provision_pve_ssh_password: "CHANGEME"
+provision_pve_inventory_name: pve
+provision_pve_inventory_group: proxmox
+provision_pve_python_interpreter: /usr/bin/python3
+provision_pve_upload_dir: /mnt/ramdisk
+provision_vm_cloudinit_storage: local-lvm
+provision_vm_network_bridge: vmbr0
+
+build_template_memory_mb: 2048
+build_force_rebuild: false
+build_workdir: "{{ cluster_workspace_root }}/build/workspace"
+build_state_file: "{{ cluster_workspace_root }}/build/build_templates_state.json"
+build_cloud_image_download_timeout: 3600
+build_cloud_image_customize_enabled: true
+build_cloud_image_packages:
+  - qemu-guest-agent
+
+# Keys must stay aligned with group_vars/all/atlas-compute-provision.yml (or override consistently).
+# Catalog key = PVE template name; image_file derived from image_url basename.
+provision_pve_templates:
+  ubuntu-noble:
+    id: 9001
+    image_url: https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-amd64.img
+  oracle-ol9:
+    id: 9002
+    image_url: https://yum.oracle.com/templates/OracleLinux/OL9/u7/x86_64/OL9U7_x86_64-kvm-b289.qcow2
+  debian-trixie:
+    id: 9003
+    image_url: https://cloud.debian.org/images/cloud/trixie/latest/debian-13-generic-amd64.qcow2

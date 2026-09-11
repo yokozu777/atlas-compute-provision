@@ -1,0 +1,18 @@
+# Minimal stack overlay for provision_nodes — infra platform
+# Prefer group_vars/all/atlas-compute-provision.yml + ./run.sh; use this as EXTRA_VARS_FILE to switch stacks:
+#   EXTRA_VARS_FILE=examples/infra/provision.example.yml ./run.sh provision --tags 00_validate_provision
+#
+# Fill secrets locally (or examples/secrets.example.yml); do not commit live values.
+
+provision_stack: infra
+provision_mode: apply
+# Role/compose gate for atlas-infra-edge; TF maps come from provision_stack: infra
+# (not from the k8s overlay path).
+
+provision_tf_state_git_push: false
+
+provision_inventory_group_map_infra:
+  infra_platform: infra_node
+
+provision_tf_module_map_infra:
+  infra_node: proxmox_infra_node

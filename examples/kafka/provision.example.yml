@@ -1,0 +1,20 @@
+# Minimal stack overlay for provision_nodes — kafka
+# Prefer group_vars/all/atlas-compute-provision.yml + ./run.sh; use this as EXTRA_VARS_FILE to switch stacks:
+#   EXTRA_VARS_FILE=examples/kafka/provision.example.yml \
+#     INVENTORY=examples/kafka/hosts.example.yml \
+#     ./run.sh provision --tags 00_validate_provision
+#
+# Fill secrets locally (or examples/secrets.example.yml); do not commit live values.
+
+provision_stack: kafka
+provision_mode: apply
+
+provision_tf_state_git_push: false
+
+provision_inventory_group_map_kafka:
+  kafka_controllers: kafka_controller_node
+  kafka_brokers: kafka_broker_node
+
+provision_tf_module_map_kafka:
+  kafka_controller_node: proxmox_kafka_controller
+  kafka_broker_node: proxmox_kafka_broker

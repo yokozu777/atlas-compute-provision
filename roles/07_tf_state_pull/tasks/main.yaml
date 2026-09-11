@@ -1,0 +1,200 @@
+---
+# Pull durable terraform.tfstate into provision_tf_state_repo_dir (ADR 001 / Phase 6).
+# Path: <provision_tf_state_local_dir>/tfstate/<cluster_id>/
+#
+# Git-backed mode:
+#   - existing matching checkout → fetch + ff-only (never ansible.git force / whole-tree reset)
+#   - missing .git → clone once into local_dir
+# Opt-in provision_tf_state_git_discard_local resets tracked/untracked under
+# provision_tf_state_repo_prefix only (never clusters/).
+- name: Check terraform state local directory
+  ansible.builtin.stat:
+    path: "{{ provision_tf_state_local_dir }}"
+  register: provision_tf_state_local_stat
+
+- name: Check whether local state directory is a git repository
+  ansible.builtin.stat:
+    path: "{{ provision_tf_state_local_dir }}/.git"
+  register: provision_tf_state_git_meta
+  when: provision_tf_state_local_stat.stat.exists | default(false)
+
+- name: Backup local-only state directory before git clone
+  ansible.builtin.command:
+    cmd: >-
+      mv {{ provision_tf_state_local_dir | quote }}
+      {{ (provision_tf_state_local_dir ~ '.local.bak-' ~ lookup('pipe', 'date +%Y%m%d%H%M%S')) | quote }}
+  when:
+    - provision_tf_state_git_push | default(false) | bool
+    - provision_tf_state_local_stat.stat.exists | default(false)
+    - not (provision_tf_state_git_meta.stat.exists | default(false))
+
+- name: Ensure local terraform state repository directory exists
+  ansible.builtin.file:
+    path: "{{ provision_tf_state_local_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Skip remote git sync for terraform state (local-only mode)
+  ansible.builtin.debug:
+    msg: >-
+      provision_tf_state_git_push=false — skipping git clone/pull for
+      {{ provision_tf_state_repo }}; using local {{ provision_tf_state_local_dir }}
+  when: not (provision_tf_state_git_push | default(false) | bool)
+
+- name: Sync terraform state git repository
+  when: provision_tf_state_git_push | default(false) | bool
+  vars:
+    provision_tf_state_git_prefix: "{{ provision_tf_state_repo_prefix | trim }}"
+  block:
+    - name: Re-check git metadata after ensure/backup
+      ansible.builtin.stat:
+        path: "{{ provision_tf_state_local_dir }}/.git"
+      register: provision_tf_state_git_meta
+
+    - name: Read origin URL from existing checkout
+      ansible.builtin.command:
+        cmd: git remote get-url origin
+        chdir: "{{ provision_tf_state_local_dir }}"
+      register: provision_tf_state_origin_url
+      changed_when: false
+      when: provision_tf_state_git_meta.stat.exists | default(false)
+
+    - name: Canonicalize origin and provision_tf_state_repo for compare
+      ansible.builtin.set_fact:
+        provision_tf_state_origin_canon: "{{ provision_tf_state_origin_url.stdout | trim | canonicalize_git_remote }}"
+        provision_tf_state_repo_canon: "{{ provision_tf_state_repo | trim | canonicalize_git_remote }}"
+        provision_tf_state_origin_matches: >-
+          {{
+            (provision_tf_state_origin_url.stdout | trim)
+            | git_remotes_match(provision_tf_state_repo)
+          }}
+      when: provision_tf_state_git_meta.stat.exists | default(false)
+
+    - name: Fail when local_dir git remote does not match provision_tf_state_repo
+      ansible.builtin.fail:
+        msg: >-
+          provision_tf_state_local_dir={{ provision_tf_state_local_dir }} is a git checkout
+          of origin={{ provision_tf_state_origin_url.stdout | trim }}
+          (canon={{ provision_tf_state_origin_canon }}), but
+          provision_tf_state_repo={{ provision_tf_state_repo }}
+          (canon={{ provision_tf_state_repo_canon }}). Point local_dir at the
+          matching inventory/state checkout (Phase 6) or use a dedicated
+          {{ atlas_cluster_root | default('$ATLAS_CLUSTER_ROOT') }}/tfstate-repo clone.
+      when:
+        - provision_tf_state_git_meta.stat.exists | default(false)
+        - not (provision_tf_state_origin_matches | bool)
+
+    - name: Detect dirty paths outside durable tfstate prefix
+      ansible.builtin.command:
+        cmd: >-
+          git status --porcelain --untracked-files=all --
+          . ":(exclude){{ provision_tf_state_git_prefix }}"
+          ":(exclude){{ provision_tf_state_git_prefix }}/**"
+        chdir: "{{ provision_tf_state_local_dir }}"
+      register: provision_tf_state_dirty_outside
+      changed_when: false
+      when: provision_tf_state_git_meta.stat.exists | default(false)
+
+    - name: Fail when checkout has local changes outside tfstate/
+      ansible.builtin.fail:
+        msg: >-
+          Local modifications outside {{ provision_tf_state_git_prefix }}/ in
+          {{ provision_tf_state_local_dir }} (force=no; never whole-repo reset):
+          {{ provision_tf_state_dirty_outside.stdout | trim }}
+          Commit/stash those paths, or point provision_tf_state_local_dir at a
+          clean dedicated checkout.
+      when:
+        - provision_tf_state_git_meta.stat.exists | default(false)
+        - (provision_tf_state_dirty_outside.stdout | default('') | trim | length) > 0
+
+    - name: Detect dirty paths under durable tfstate prefix
+      ansible.builtin.command:
+        cmd: >-
+          git status --porcelain --untracked-files=all --
+          {{ provision_tf_state_git_prefix }}
+        chdir: "{{ provision_tf_state_local_dir }}"
+      register: provision_tf_state_dirty_inside
+      changed_when: false
+      when: provision_tf_state_git_meta.stat.exists | default(false)
+
+    - name: Discard local changes under tfstate/ only (opt-in)
+      ansible.builtin.shell: |
+        set -euo pipefail
+        prefix="{{ provision_tf_state_git_prefix }}"
+        if git rev-parse --verify HEAD >/dev/null 2>&1; then
+          git checkout HEAD -- "$prefix" 2>/dev/null || true
+        fi
+        git clean -fd -- "$prefix"
+      args:
+        chdir: "{{ provision_tf_state_local_dir }}"
+        executable: /bin/bash
+      when:
+        - provision_tf_state_git_meta.stat.exists | default(false)
+        - provision_tf_state_git_discard_local | default(false) | bool
+        - (provision_tf_state_dirty_inside.stdout | default('') | trim | length) > 0
+
+    - name: Fail when tfstate/ is dirty and discard is disabled
+      ansible.builtin.fail:
+        msg: >-
+          Local modifications under {{ provision_tf_state_git_prefix }}/ in
+          {{ provision_tf_state_local_dir }} block ff-only sync (force=no):
+          {{ provision_tf_state_dirty_inside.stdout | trim }}
+          Clean those paths, or set provision_tf_state_git_discard_local=true
+          (discards under {{ provision_tf_state_git_prefix }}/ only; never clusters/).
+      when:
+        - provision_tf_state_git_meta.stat.exists | default(false)
+        - not (provision_tf_state_git_discard_local | default(false) | bool)
+        - (provision_tf_state_dirty_inside.stdout | default('') | trim | length) > 0
+
+    - name: Fetch and fast-forward existing matching checkout
+      ansible.builtin.shell: |
+        set -euo pipefail
+        branch="{{ provision_tf_state_branch }}"
+        git fetch origin "$branch"
+        git checkout "$branch"
+        git merge --ff-only "origin/$branch"
+      args:
+        chdir: "{{ provision_tf_state_local_dir }}"
+        executable: /bin/bash
+      register: provision_tf_state_ff_sync
+      changed_when: >-
+        'Already up to date' not in (provision_tf_state_ff_sync.stdout | default(''))
+        and 'Already up to date' not in (provision_tf_state_ff_sync.stderr | default(''))
+      when: provision_tf_state_git_meta.stat.exists | default(false)
+
+    - name: Clone terraform state repository into local_dir
+      ansible.builtin.git:
+        repo: "{{ provision_tf_state_repo }}"
+        dest: "{{ provision_tf_state_local_dir }}"
+        version: "{{ provision_tf_state_branch }}"
+        accept_hostkey: true
+        key_file: "{{ lookup('env', 'SSH_KEY') }}"
+        update: true
+        force: false
+      when: not (provision_tf_state_git_meta.stat.exists | default(false))
+
+- name: Ensure cluster state directory exists in repository
+  ansible.builtin.file:
+    path: "{{ provision_tf_state_repo_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Check whether terraform.tfstate already exists in repository
+  ansible.builtin.stat:
+    path: "{{ provision_tf_state_repo_file }}"
+  register: provision_tf_state_repo_stat
+
+- name: Initialize empty terraform.tfstate for first cluster provision
+  ansible.builtin.copy:
+    content: |
+      {
+        "version": 4,
+        "terraform_version": "",
+        "serial": 0,
+        "lineage": "",
+        "outputs": {},
+        "resources": []
+      }
+    dest: "{{ provision_tf_state_repo_file }}"
+    mode: "0600"
+  when: not provision_tf_state_repo_stat.stat.exists

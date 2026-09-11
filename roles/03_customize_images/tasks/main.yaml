@@ -1,0 +1,57 @@
+---
+# Only remove a pre-existing dest when rename will mv a different download name.
+# When image_file == basename(image_url) the download IS the dest — do not delete it.
+- name: Remove stale template image file if present
+  ansible.builtin.file:
+    path: "{{ build_workdir }}/{{ item.image_file }}"
+    state: absent
+  loop: "{{ build_active_templates }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: item.image_file != (item.image_url | basename)
+
+- name: Rename downloaded cloud image to template image_file
+  ansible.builtin.shell: |
+    set -euo pipefail
+    src="{{ item.image_url | basename }}"
+    dest="{{ item.image_file }}"
+    if [ "$src" = "$dest" ]; then
+      test -f "$dest"
+      exit 0
+    fi
+    if [ ! -f "$src" ]; then
+      echo "Downloaded image not found: $src (expected from image_url)" >&2
+      exit 1
+    fi
+    mv -T "$src" "$dest"
+  args:
+    chdir: "{{ build_workdir }}"
+  loop: "{{ build_active_templates }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Install packages in cloud image via virt-customize
+  ansible.builtin.command:
+    argv:
+      - virt-customize
+      - -a
+      - "{{ item.image_file }}"
+      - --install
+      - "{{ build_cloud_image_packages | join(',') }}"
+  args:
+    chdir: "{{ build_workdir }}"
+  loop: "{{ build_active_templates }}"
+  loop_control:
+    label: "{{ item.name }}"
+  environment:
+    LIBGUESTFS_BACKEND: direct
+  when:
+    - build_cloud_image_customize_enabled | bool
+    - build_cloud_image_packages | length > 0
+
+- name: Cloud image customize disabled — skip virt-customize
+  ansible.builtin.debug:
+    msg: >-
+      build_cloud_image_customize_enabled=false — images renamed only,
+      no packages installed inside disk.
+  when: not (build_cloud_image_customize_enabled | bool)

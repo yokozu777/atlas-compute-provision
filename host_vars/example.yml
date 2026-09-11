@@ -1,0 +1,12 @@
+# Optional per-host overrides.
+# Copy to host_vars/<inventory_hostname>.yml (host_vars/* is gitignored except examples).
+#
+# Inventory keys are often IPs — use the same key as in inventory.yml:
+#   host_vars/192.168.1.50.yml
+#
+# hostname: jslave01.example.com
+# ansible_user: localuser
+# ansible_port: 22
+# provision:
+#   cores: 8
+#   memory: 16384

@@ -1,0 +1,18 @@
+# Example / docs: provision does NOT need provision_pve_templates.
+#
+# Terraform clones by PVE template *name* from hosts:
+#   provision:
+#     clone: ubuntu-base    # must exist as a template name on the hypervisor
+#
+# Build golden templates once (id + image_url) on a factory leaf:
+#   lab/pve-templates  or  ./run.sh templates  /  --template pve_templates
+#
+# Optional soft allowlist on a stack leaf (keys only — id NOT required here):
+#
+# provision_pve_templates:
+#   ubuntu-base: {}
+#   oracle-base: {}
+#   debian-base: {}
+#
+# Prefer omitting provision_pve_templates entirely on provision-only leaves.
+# Still required: provision_stack, maps, PVE/DNS secrets, hosts.provision.clone.

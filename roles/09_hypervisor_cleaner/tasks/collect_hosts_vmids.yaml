@@ -1,0 +1,11 @@
+---
+- name: Collect VMIDs from hosts in inventory group
+  ansible.builtin.set_fact:
+    provision_hosts_vmids: >-
+      {{
+        provision_hosts_vmids | default([])
+        + [host_entry.value.provision.vmid | string]
+      }}
+  loop: "{{ provision_inventory_groups_index[provision_group.key].hosts | dict2items }}"
+  loop_control:
+    loop_var: host_entry

@@ -1,0 +1,368 @@
+---
+- name: Validate provision_mode
+  ansible.builtin.assert:
+    that:
+      - provision_mode is defined
+      - provision_mode in ['apply', 'recreate', 'destroy']
+    fail_msg: "provision_mode must be 'apply', 'recreate' or 'destroy', got '{{ provision_mode | default('') }}'"
+
+- name: Validate provision_stack is set
+  ansible.builtin.assert:
+    that:
+      - provision_stack is defined
+      - provision_stack | length > 0
+    fail_msg: "provision_stack must be set (e.g. k8s, infra, postgresql, mysql, jenkins, gitlab_runner, redis, kafka)"
+
+- name: Assert stack-specific provision map variables exist
+  ansible.builtin.assert:
+    that:
+      - lookup('vars', 'provision_inventory_group_map_' ~ provision_stack) is defined
+      - lookup('vars', 'provision_inventory_group_map_' ~ provision_stack) | length > 0
+      - lookup('vars', 'provision_tf_module_map_' ~ provision_stack) is defined
+      - lookup('vars', 'provision_tf_module_map_' ~ provision_stack) | length > 0
+    fail_msg: >-
+      Define provision_inventory_group_map_{{ provision_stack }} and
+      provision_tf_module_map_{{ provision_stack }} in group_vars/all/atlas-compute-provision.yml
+      (or a site overlay / EXTRA_VARS_FILE).
+
+- name: Resolve atlas paths for validation
+  ansible.builtin.set_fact:
+    provision_stack_path: "{{ role_path }}/../../stacks/{{ provision_stack }}"
+    provision_atlas_modules_path: "{{ role_path }}/../../modules/proxmox_vm"
+    provision_atlas_shared_path: "{{ role_path }}/../../stacks/_shared"
+
+- name: Ensure stack directory exists
+  ansible.builtin.stat:
+    path: "{{ provision_stack_path }}"
+  register: provision_stack_stat
+
+- name: Fail when stack is missing
+  ansible.builtin.fail:
+    msg: "Stack '{{ provision_stack }}' not found at {{ provision_stack_path }}"
+  when: not provision_stack_stat.stat.exists
+
+- name: Ensure stack variables.tf.j2 template exists
+  ansible.builtin.stat:
+    path: "{{ provision_stack_path }}/templates/variables.tf.j2"
+  register: provision_stack_variables_template_stat
+
+- name: Fail when stack variables template is missing
+  ansible.builtin.fail:
+    msg: "Stack template not found at {{ provision_stack_path }}/templates/variables.tf.j2"
+  when: not provision_stack_variables_template_stat.stat.exists
+
+- name: Ensure stack main.tf.j2 template exists
+  ansible.builtin.stat:
+    path: "{{ provision_stack_path }}/main.tf.j2"
+  register: provision_stack_main_template_stat
+
+- name: Fail when stack main template is missing
+  ansible.builtin.fail:
+    msg: "Stack template not found at {{ provision_stack_path }}/main.tf.j2"
+  when: not provision_stack_main_template_stat.stat.exists
+
+- name: Ensure proxmox_vm module directory exists
+  ansible.builtin.stat:
+    path: "{{ provision_atlas_modules_path }}"
+  register: provision_module_stat
+
+- name: Fail when proxmox_vm module is missing
+  ansible.builtin.fail:
+    msg: "Terraform module not found at {{ provision_atlas_modules_path }}"
+  when: not provision_module_stat.stat.isdir | default(false)
+
+- name: Ensure shared providers template exists
+  ansible.builtin.stat:
+    path: "{{ provision_atlas_shared_path }}/providers.tf.j2"
+  register: provision_providers_template_stat
+
+- name: Fail when shared providers template is missing
+  ansible.builtin.fail:
+    msg: "Shared template not found at {{ provision_atlas_shared_path }}/providers.tf.j2"
+  when: not provision_providers_template_stat.stat.exists
+
+- name: Assert required provision variables are set
+  ansible.builtin.assert:
+    that:
+      - dns_domain_suffix | default('') | length > 0
+      - provision_hosts_file | default('') | length > 0
+      - provision_generated_variables_tf | default('') | length > 0
+      - provision_inventory_group_map is defined
+      - provision_inventory_group_map | length > 0
+      - provision_tf_module_map is defined
+      - provision_tf_module_map | length > 0
+      - provision_network_prefix | default('') | string | length > 0
+      - provision_gateway | default('') | length > 0
+      - provision_proxmox_api_url | default('') | length > 0
+      - provision_proxmox_target_node | default('') | length > 0
+      - provision_proxmox_token_id | default('') | length > 0
+      - provision_proxmox_token_secret | default('') | length > 0
+      - provision_dns_server | default('') | length > 0
+      - provision_dns_zone | default('') | length > 0
+      - provision_dns_key_name | default('') | length > 0
+      - provision_dns_key_secret | default('') | length > 0
+      - provision_tf_provider_proxmox_version | default('') | length > 0
+      - provision_tf_provider_dns_version | default('') | length > 0
+      - provision_tf_provider_local_version | default('') | length > 0
+      - provision_vm_cloudinit_storage | default('') | length > 0
+      - provision_vm_network_bridge | default('') | length > 0
+      - provision_vm_ciuser | default('') | length > 0
+      - provision_ssh_public_key_file | default('') | length > 0
+      - provision_tf_state_local_dir | default('') | length > 0
+      - provision_tf_state_repo_prefix | default('') | length > 0
+      - provision_tf_state_cluster_path | default('') | length > 0
+      - provision_tf_state_repo_dir | default('') | length > 0
+      - provision_tf_state_repo_file | default('') | length > 0
+      - provision_tf_workspace_dir | default('') | length > 0
+      - provision_tf_workspace_state_file | default('') | length > 0
+      - provision_pve_host | default('') | length > 0
+      - provision_pve_user | default('') | length > 0
+      - provision_pve_ssh_password | default('') | length > 0
+    fail_msg: "Required provision_* variables are missing — check group_vars/all/atlas-compute-provision.yml / EXTRA_VARS_FILE"
+
+# Optional allowlist only. Terraform clones by PVE template *name* (hosts.provision.clone).
+# id / image_url belong on the templates build path (lab/pve-templates / build_templates.yaml).
+- name: Normalize optional provision_pve_templates allowlist
+  ansible.builtin.set_fact:
+    provision_pve_templates: "{{ provision_pve_templates | default({}, true) }}"
+
+- name: Assert optional provision_pve_templates is a mapping
+  ansible.builtin.assert:
+    that:
+      - provision_pve_templates is mapping
+    fail_msg: provision_pve_templates must be a mapping (or omitted)
+
+- name: Assert unique ids when optional catalog entries declare id
+  ansible.builtin.assert:
+    that:
+      - (_provision_template_ids | length) == (_provision_template_ids | unique | length)
+    fail_msg: provision_pve_templates must have unique id values when id is set
+  vars:
+    _provision_template_ids: >-
+      {{
+        provision_pve_templates.values()
+        | select('mapping')
+        | selectattr('id', 'defined')
+        | map(attribute='id')
+        | list
+      }}
+  when: provision_pve_templates | length > 0
+
+- name: Resolve optional provision_pve_templates (name/image_file from key/url)
+  ansible.builtin.set_fact:
+    provision_pve_templates: "{{ provision_pve_templates | resolve_pve_templates }}"
+  when: provision_pve_templates | length > 0
+
+- name: Assert git variables when terraform state git push is enabled
+  ansible.builtin.assert:
+    that:
+      - gitea_host | default('') | trim | length > 0
+      - gitea_host | default('') | trim | upper != 'CHANGEME'
+      - git_user_name | default('') | trim | length > 0
+      - git_user_name | default('') | trim | upper != 'CHANGEME'
+      - git_user_email | default('') | trim | length > 0
+      - git_user_email | default('') | trim | upper != 'CHANGEME'
+      - provision_tf_state_repo | default('') | trim | length > 0
+      - provision_tf_state_repo | default('') | trim | upper != 'CHANGEME'
+      - provision_tf_state_branch | default('') | trim | length > 0
+    fail_msg: >-
+      Git/terraform state variables required when provision_tf_state_git_push=true
+      (gitea_host, git_user_*, provision_tf_state_repo/branch — no CHANGEME)
+  when: provision_tf_state_git_push | default(false) | bool
+
+- name: Check whether TF state local_dir is already a git checkout
+  ansible.builtin.stat:
+    path: "{{ provision_tf_state_local_dir }}/.git"
+  register: provision_tf_state_validate_git_meta
+  when:
+    - provision_tf_state_git_push | default(false) | bool
+    - provision_tf_state_local_dir | default('') | length > 0
+
+- name: Read origin URL from TF state local_dir (validate)
+  ansible.builtin.command:
+    cmd: git remote get-url origin
+    chdir: "{{ provision_tf_state_local_dir }}"
+  register: provision_tf_state_validate_origin
+  changed_when: false
+  failed_when: false
+  when:
+    - provision_tf_state_git_push | default(false) | bool
+    - provision_tf_state_validate_git_meta.stat.exists | default(false)
+
+- name: Canonicalize TF state remotes for validate warn
+  ansible.builtin.set_fact:
+    provision_tf_state_validate_origin_canon: >-
+      {{ provision_tf_state_validate_origin.stdout | default('') | trim | canonicalize_git_remote }}
+    provision_tf_state_validate_repo_canon: >-
+      {{ provision_tf_state_repo | trim | canonicalize_git_remote }}
+  when:
+    - provision_tf_state_git_push | default(false) | bool
+    - provision_tf_state_validate_git_meta.stat.exists | default(false)
+    - provision_tf_state_validate_origin.rc | default(1) == 0
+
+- name: Warn when TF state local_dir origin does not match provision_tf_state_repo
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: provision_tf_state_local_dir={{ provision_tf_state_local_dir }}
+      origin={{ provision_tf_state_validate_origin.stdout | default('') | trim }}
+      (canon={{ provision_tf_state_validate_origin_canon }})
+      does not match provision_tf_state_repo={{ provision_tf_state_repo }}
+      (canon={{ provision_tf_state_validate_repo_canon }}).
+      07_tf_state_pull will fail until local_dir points at the matching checkout
+      (ADR 001 Phase 6) or a dedicated tfstate-repo clone.
+  when:
+    - provision_tf_state_git_push | default(false) | bool
+    - provision_tf_state_validate_git_meta.stat.exists | default(false)
+    - provision_tf_state_validate_origin.rc | default(1) == 0
+    - provision_tf_state_validate_origin_canon != provision_tf_state_validate_repo_canon
+
+- name: Assert infra maps when provision_stack is infra
+  ansible.builtin.assert:
+    that:
+      - provision_inventory_group_map_infra is defined
+      - provision_inventory_group_map_infra | length > 0
+      - provision_tf_module_map_infra is defined
+      - provision_tf_module_map_infra | length > 0
+      - (provision_inventory_group_map_infra.values() | list | difference(provision_tf_module_map_infra.keys() | list)) | length == 0
+      - (provision_tf_module_map_infra.keys() | list | difference(provision_inventory_group_map_infra.values() | list)) | length == 0
+    fail_msg: >-
+      provision_stack=infra requires provision_inventory_group_map_infra and
+      provision_tf_module_map_infra (keys/values must align like the stack maps).
+  when: (provision_stack | default('')) == 'infra'
+
+- name: Assert provision_tf_module_map aligns with provision_inventory_group_map
+  ansible.builtin.assert:
+    that:
+      - (provision_inventory_group_map.values() | list | difference(provision_tf_module_map.keys() | list)) | length == 0
+      - (provision_tf_module_map.keys() | list | difference(provision_inventory_group_map.values() | list)) | length == 0
+    fail_msg: >-
+      provision_tf_module_map keys must exactly match provision_inventory_group_map values.
+      inventory groups: {{ provision_inventory_group_map.values() | list }},
+      module map keys: {{ provision_tf_module_map.keys() | list }}
+
+- name: Check provision_hosts_file exists
+  ansible.builtin.stat:
+    path: "{{ provision_hosts_file }}"
+  register: provision_hosts_file_stat
+
+- name: Fail when provision_hosts_file is missing
+  ansible.builtin.fail:
+    msg: "Inventory file not found at {{ provision_hosts_file }}"
+  when: not provision_hosts_file_stat.stat.exists
+
+- name: Load cluster hosts inventory
+  ansible.builtin.include_vars:
+    file: "{{ provision_hosts_file }}"
+    name: cluster_hosts
+
+- name: Build flat provision inventory group index
+  ansible.builtin.include_tasks: build_provision_inventory_index.yaml
+
+- name: Reset collected VMID list
+  ansible.builtin.set_fact:
+    provision_collected_vmids: []
+
+- name: Validate provision inventory groups and hosts
+  ansible.builtin.include_tasks: validate_inventory_group.yaml
+  loop: "{{ provision_inventory_group_map | dict2items }}"
+  loop_control:
+    loop_var: provision_group
+
+- name: Assert VMIDs are unique across all provision hosts
+  ansible.builtin.assert:
+    that:
+      - provision_collected_vmids | length == provision_collected_vmids | unique | length
+    fail_msg: >-
+      Duplicate vmid values in {{ provision_hosts_file }}: {{ provision_collected_vmids |
+      difference(provision_collected_vmids | unique) }}
+
+- name: Validate optional provision_wait_hosts groups exist in hosts file
+  ansible.builtin.assert:
+    that:
+      - item in provision_inventory_groups_index
+      - provision_inventory_groups_index[item].hosts | default({}) | length > 0
+    fail_msg: >-
+      provision_wait_hosts references missing/empty inventory group '{{ item }}'
+      in {{ provision_hosts_file }}. Rename checklist: update hosts group name,
+      provision_inventory_group_map_<stack> keys, and provision_wait_hosts together.
+  loop: "{{ provision_wait_hosts.split(':') | map('trim') | reject('equalto', '') | list }}"
+  when: provision_wait_hosts | default('') | trim | length > 0
+
+- name: Check SSH public key file exists
+  ansible.builtin.stat:
+    path: "{{ provision_ssh_public_key_file }}"
+  register: provision_ssh_public_key_stat
+
+- name: Fail when SSH public key file is missing
+  ansible.builtin.fail:
+    msg: "SSH public key not found at {{ provision_ssh_public_key_file }}"
+  when: not provision_ssh_public_key_stat.stat.exists
+
+- name: Validate optional stack output templates when configured
+  ansible.builtin.stat:
+    path: "{{ provision_stack_path }}/templates/{{ item.template }}"
+  loop: "{{ provision_stack_extra_outputs | default([]) }}"
+  register: provision_stack_extra_output_stats
+  when: provision_stack_extra_outputs | default([]) | length > 0
+
+- name: Fail when configured stack output template is missing
+  ansible.builtin.fail:
+    msg: >-
+      provision_stack_extra_outputs references missing template
+      {{ item.item.template }} at {{ provision_stack_path }}/templates/
+  loop: "{{ provision_stack_extra_output_stats.results | default([]) }}"
+  when:
+    - provision_stack_extra_outputs | default([]) | length > 0
+    - not item.stat.exists
+
+- name: Assert cluster workspace runtime paths when workspace vars are defined
+  ansible.builtin.assert:
+    that:
+      - cluster_workspace_root | default('') | length > 0
+      - build_workdir is match('^' ~ cluster_workspace_root)
+      - build_state_file is match('^' ~ cluster_workspace_root)
+      - provision_tf_workspace_dir is match('^' ~ cluster_workspace_root)
+      - provision_generated_variables_tf is match('^' ~ cluster_workspace_root)
+      - provision_tf_state_local_dir | default('') | length > 0
+      - provision_tf_state_repo_prefix | default('') | trim | length > 0
+      - provision_tf_state_repo_prefix is match('^[^/]+$')
+      - provision_tf_state_cluster_path | default('') | length > 0
+      - provision_tf_state_repo_dir is match('^' ~ provision_tf_state_local_dir)
+      - provision_tf_state_repo_file is match('^' ~ provision_tf_state_repo_dir)
+      # Durable TF: <local_dir>/tfstate/<cluster_id>/ (ADR 001). Never clusters/ or workspace/.
+      - not (provision_tf_state_cluster_path is match('^clusters/'))
+      - not (provision_tf_state_cluster_path is match('^workspace/'))
+    fail_msg: >-
+      Build/TF-workspace paths must live under cluster_workspace_root;
+      durable TF state under provision_tf_state_local_dir/tfstate/<cluster_id>
+      (ADR 001 — sibling tfstate-repo/, in-repo prefix tfstate/, not clusters/ or workspace/)
+  when: cluster_workspace_root | default('') | length > 0
+
+- name: Assert TF state cluster path uses repo prefix and cluster id
+  ansible.builtin.assert:
+    that:
+      - provision_tf_state_cluster_path == (provision_tf_state_repo_prefix ~ '/' ~ cluster_id)
+    fail_msg: >-
+      provision_tf_state_cluster_path ({{ provision_tf_state_cluster_path }}) must equal
+      {{ provision_tf_state_repo_prefix }}/{{ cluster_id }}
+      (ADR 001 — e.g. tfstate/ci/redis/)
+  when:
+    - cluster_workspace_root | default('') | length > 0
+    - cluster_id | default('') | length > 0
+    - provision_tf_state_repo_prefix | default('') | length > 0
+
+- name: Assert TF state cluster path uses repo prefix when only workspace id is set
+  ansible.builtin.assert:
+    that:
+      - provision_tf_state_cluster_path == (provision_tf_state_repo_prefix ~ '/' ~ cluster_workspace_id)
+    fail_msg: >-
+      provision_tf_state_cluster_path ({{ provision_tf_state_cluster_path }}) must equal
+      {{ provision_tf_state_repo_prefix }}/{{ cluster_workspace_id }} when cluster_id is unset
+  when:
+    - cluster_workspace_root | default('') | length > 0
+    - cluster_id | default('') | length == 0
+    - cluster_workspace_id | default('') | length > 0
+    - provision_tf_state_repo_prefix | default('') | length > 0
+
+- name: Validate live secrets (CHANGEME gate)
+  ansible.builtin.include_tasks: secrets.yml

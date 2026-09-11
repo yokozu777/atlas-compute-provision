@@ -1,0 +1,40 @@
+---
+provision_mode: apply
+provision_tf_state_git_push: false
+provision_tf_state_git_discard_local: false
+provision_enforce_live_secrets: false
+
+# ADR 001 Phase 1 — durable TF path (also in provision_defaults.yml / 00_ensure_workspace).
+provision_tf_state_local_dir: "{{ atlas_cluster_root | default('.', true) }}/tfstate-repo"
+provision_tf_state_repo_prefix: tfstate
+provision_tf_state_cluster_path: "{{ provision_tf_state_repo_prefix }}/{{ cluster_id | default(cluster_workspace_id, true) }}"
+provision_tf_state_repo_dir: "{{ provision_tf_state_local_dir }}/{{ provision_tf_state_cluster_path }}"
+provision_tf_state_repo_file: "{{ provision_tf_state_repo_dir }}/terraform.tfstate"
+
+# Stable knobs (also in playbooks/group_vars/all/provision_defaults.yml for multi-play).
+provision_pve_user: root
+provision_pve_inventory_name: pve
+provision_pve_inventory_group: proxmox
+provision_pve_python_interpreter: /usr/bin/python3
+provision_network_prefix: "24"
+provision_proxmox_tls_insecure: true
+provision_proxmox_parallel: 10
+provision_tf_parallelism: 3
+provision_tf_provider_proxmox_version: "3.0.2-rc08"
+provision_tf_provider_dns_version: "3.5.0"
+provision_tf_provider_local_version: "2.8.0"
+provision_dns_key_algorithm: hmac-sha256
+provision_dns_transport: tcp4
+provision_dns_tf_manage_a_records: false
+provision_dns_a_ttl: 300
+provision_vm_full_clone: false
+provision_vm_disk_format: raw
+provision_vm_network_bridge: vmbr0
+provision_vm_ciuser: root
+provision_rook_database_size_mb: "1024"
+provision_rook_data_disk_index: 1
+provision_rook_wwn_path_prefix: "/dev/disk/by-id/wwn-"
+provision_wait_ssh_connect_timeout: 10
+provision_wait_ssh_sleep: 5
+provision_wait_ssh_delay: 10
+provision_wait_ssh_timeout: 600

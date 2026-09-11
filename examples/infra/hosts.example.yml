@@ -1,0 +1,26 @@
+# Minimal infra inventory for validate smoke (no live PVE required).
+# Pair with provision.example.yml:
+#   INVENTORY=examples/infra/hosts.example.yml \
+#     EXTRA_VARS_FILE=examples/infra/provision.example.yml \
+#     ./run.sh provision --tags 00_validate_provision
+
+all:
+  children:
+    infra_platform:
+      hosts:
+        192.0.2.210:
+          hostname: infra01.infra.example.com
+          provision:
+            vmid: "5210"
+            sockets: 1
+            cores: 4
+            memory: 8192
+            numa: false
+            clone: ubuntu-noble
+            disks:
+              - size: "100"
+                slot: 0
+                storage: local-lvm
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+    ansible_ssh_user: localuser

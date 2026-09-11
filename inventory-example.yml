@@ -1,0 +1,46 @@
+# Example inventory for ./run.sh (default stack: jenkins).
+# Copy to inventory.yml (gitignored) and edit addresses / VMIDs:
+#   cp inventory-example.yml inventory.yml
+#
+# Default group (must match provision_inventory_group_map_<stack>):
+# - jslave — Jenkins build agents
+#
+# Inventory host keys are typically the VM IP (used by Terraform layout).
+# provision.clone is the PVE template name (Terraform). Optional provision_pve_templates
+# is a soft allowlist of those names (group_vars/all/atlas-compute-provision.yml).
+#
+# For other stacks see examples/{postgresql,kafka}/hosts.example.yml
+
+all:
+  children:
+    jslave:
+      hosts:
+        192.168.1.50:
+          hostname: jslave01.example.com
+          provision:
+            vmid: "5200"
+            sockets: 1
+            cores: 4
+            memory: 8192
+            numa: false
+            clone: ubuntu-noble
+            disks:
+              - size: "100G"
+                slot: 0
+                storage: local-lvm
+        # 192.168.1.51:
+        #   hostname: jslave02.example.com
+        #   provision:
+        #     vmid: "5201"
+        #     sockets: 1
+        #     cores: 4
+        #     memory: 8192
+        #     numa: false
+        #     clone: ubuntu-noble
+        #     disks:
+        #       - size: "100G"
+        #         slot: 0
+        #         storage: local-lvm
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+    ansible_ssh_user: localuser

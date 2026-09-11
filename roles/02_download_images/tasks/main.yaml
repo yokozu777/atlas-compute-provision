@@ -1,0 +1,49 @@
+---
+- name: Download VM cloud images (parallel)
+  ansible.builtin.get_url:
+    url: "{{ item.image_url }}"
+    dest: "{{ build_workdir }}/{{ item.image_url | basename }}"
+    mode: "0644"
+    timeout: "{{ build_cloud_image_download_timeout }}"
+    force: true
+  loop: "{{ build_active_templates }}"
+  loop_control:
+    label: "{{ item.name }}"
+  async: "{{ (build_cloud_image_download_timeout | int) + 300 }}"
+  poll: 0
+  register: build_download_jobs
+
+- name: Wait for cloud image downloads
+  ansible.builtin.async_status:
+    jid: "{{ item.ansible_job_id }}"
+  loop: "{{ build_download_jobs.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+  register: build_download_wait
+  until: build_download_wait.finished
+  retries: "{{ ((build_cloud_image_download_timeout | int) // 10) + 30 }}"
+  delay: 10
+  when: item.ansible_job_id is defined
+  failed_when:
+    - build_download_wait.finished
+    - build_download_wait.failed | default(false)
+
+- name: Fail when cloud image download did not start
+  ansible.builtin.fail:
+    msg: >-
+      Download failed to start for {{ item.item.name }}:
+      {{ item.msg | default('unknown error') }}
+  loop: "{{ build_download_jobs.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+  when: item.ansible_job_id is not defined
+
+- name: Clear async download job handles
+  ansible.builtin.async_status:
+    jid: "{{ item.ansible_job_id }}"
+    mode: cleanup
+  loop: "{{ build_download_jobs.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+  when: item.ansible_job_id is defined
+  changed_when: false
