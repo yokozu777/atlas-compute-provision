@@ -1,4 +1,16 @@
 ---
+- name: Check Golden PVE cloud images are downloadable
+  ansible.builtin.command:
+    argv:
+      - python3
+      - "{{ role_path }}/files/probe_cloud_image.py"
+      - "{{ item.image_url }}"
+      - "{{ build_cloud_image_probe_timeout | string }}"
+  loop: "{{ build_active_templates }}"
+  loop_control:
+    label: "{{ item.name }}"
+  changed_when: false
+
 - name: Download VM cloud images (parallel)
   ansible.builtin.get_url:
     url: "{{ item.image_url }}"

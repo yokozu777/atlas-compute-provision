@@ -38,6 +38,7 @@ build_template_memory_mb: 2048
 build_force_rebuild: false
 build_workdir: "{{ cluster_workspace_root }}/build/workspace"
 build_state_file: "{{ cluster_workspace_root }}/build/build_templates_state.json"
+build_cloud_image_probe_timeout: 20
 build_cloud_image_download_timeout: 3600
 build_cloud_image_customize_enabled: true
 build_cloud_image_packages:

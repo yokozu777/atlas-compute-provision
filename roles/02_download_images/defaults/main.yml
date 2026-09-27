@@ -1,2 +1,4 @@
 ---
+# Fail the templates job when a golden image URL does not start serving bytes.
+build_cloud_image_probe_timeout: 20
 build_cloud_image_download_timeout: 3600
