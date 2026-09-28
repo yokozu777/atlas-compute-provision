@@ -88,6 +88,32 @@ class PveTemplatesFilterTest(unittest.TestCase):
         self.assertEqual(resolved["ubuntu-base"]["image_file"], "")
         self.assertEqual(resolved["oracle-base"]["image_file"], "OL9.qcow2")
 
+    def test_empty_backup_is_dropped(self) -> None:
+        resolved = self.mod.resolve_pve_template_entry(
+            {"id": 400100, "image_url": "https://example.com/u.img", "image_url_backup": "  "},
+            "ubuntu-base",
+        )
+        self.assertNotIn("image_url_backup", resolved)
+        self.assertEqual(resolved["image_file"], "u.img")
+
+    def test_backup_is_kept_and_download_result_replaces_file(self) -> None:
+        resolved = self.mod.resolve_pve_template_entry(
+            {
+                "id": 400100,
+                "image_url": "https://example.com/u.img",
+                "image_url_backup": "https://mirror.example/u.img",
+            },
+            "ubuntu-base",
+        )
+        self.assertEqual(resolved["image_url_backup"], "https://mirror.example/u.img")
+        updated = self.mod.apply_pve_download_results(
+            [resolved],
+            [{"name": "ubuntu-base", "image_url": "https://mirror.example/u.img", "image_file": "u.img"}],
+        )
+        self.assertEqual(updated[0]["image_url"], "https://mirror.example/u.img")
+        self.assertEqual(updated[0]["image_file"], "u.img")
+        self.assertEqual(updated[0]["image_url_backup"], "https://mirror.example/u.img")
+
 
 if __name__ == "__main__":
     unittest.main()

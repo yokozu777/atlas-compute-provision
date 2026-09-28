@@ -1,30 +1,22 @@
 ---
-- name: Check Golden PVE cloud images are downloadable
+- name: Download VM cloud images (parallel)
   ansible.builtin.command:
     argv:
       - python3
-      - "{{ role_path }}/files/probe_cloud_image.py"
+      - "{{ role_path }}/files/download_cloud_image.py"
+      - "{{ build_workdir }}"
       - "{{ item.image_url }}"
       - "{{ build_cloud_image_probe_timeout | string }}"
+      - "{{ build_cloud_image_stall_timeout | string }}"
+      - "{{ build_cloud_image_download_timeout | string }}"
+      - "{{ item.image_url_backup | default('') }}"
   loop: "{{ build_active_templates }}"
   loop_control:
     label: "{{ item.name }}"
-  changed_when: false
-
-- name: Download VM cloud images (parallel)
-  ansible.builtin.get_url:
-    url: "{{ item.image_url }}"
-    dest: "{{ build_workdir }}/{{ item.image_url | basename }}"
-    mode: "0644"
-    timeout: "{{ build_cloud_image_download_timeout }}"
-    force: true
-    validate_certs: false
-  loop: "{{ build_active_templates }}"
-  loop_control:
-    label: "{{ item.name }}"
-  async: "{{ (build_cloud_image_download_timeout | int) + 300 }}"
+  async: "{{ (build_cloud_image_download_timeout | int) + (build_cloud_image_stall_timeout | int) + 300 }}"
   poll: 0
   register: build_download_jobs
+  changed_when: true
 
 - name: Wait for cloud image downloads
   ansible.builtin.async_status:
@@ -50,6 +42,61 @@
   loop_control:
     label: "{{ item.item.name }}"
   when: item.ansible_job_id is not defined
+
+- name: Collect chosen cloud image URLs
+  ansible.builtin.set_fact:
+    _cloud_download_chosen: "{{ _cloud_download_chosen | default([]) + [_row] }}"
+  vars:
+    _parsed: "{{ item.stdout | from_json }}"
+    _row:
+      name: "{{ item.item.item.name }}"
+      image_url: "{{ _parsed.image_url }}"
+      image_file: "{{ _parsed.image_file }}"
+  loop: "{{ build_download_wait.results }}"
+  loop_control:
+    label: "{{ item.item.item.name }}"
+  when:
+    - not (item.skipped | default(false))
+    - item.finished | default(false)
+    - not (item.failed | default(false))
+    - item.stdout is defined
+  changed_when: false
+
+- name: Apply chosen cloud image URLs
+  ansible.builtin.set_fact:
+    build_active_templates: "{{ build_active_templates | apply_pve_download_results(_cloud_download_chosen | default([])) }}"
+    build_templates_rebuild: "{{ build_templates_rebuild | default([]) | apply_pve_download_results(_cloud_download_chosen | default([])) }}"
+  changed_when: false
+
+- name: Stat build state file
+  ansible.builtin.stat:
+    path: "{{ build_state_file }}"
+  register: build_state_stat
+
+- name: Read build state file
+  ansible.builtin.slurp:
+    src: "{{ build_state_file }}"
+  register: build_state_after_download
+  when: build_state_stat.stat.exists
+
+- name: Persist chosen cloud image URLs
+  ansible.builtin.copy:
+    dest: "{{ build_state_file }}"
+    mode: "0644"
+    content: "{{ _state | to_nice_json }}\n"
+  vars:
+    _loaded: "{{ build_state_after_download.content | b64decode | from_json }}"
+    _state: >-
+      {{
+        _loaded | combine({
+          'build_active_templates': build_active_templates,
+          'build_templates_rebuild': (
+            _loaded.build_templates_rebuild | default([])
+            | apply_pve_download_results(_cloud_download_chosen | default([]))
+          )
+        }, recursive=False)
+      }}
+  when: build_state_stat.stat.exists
 
 - name: Clear async download job handles
   ansible.builtin.async_status:
