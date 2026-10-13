@@ -20,9 +20,8 @@ provision_network_prefix: "24"
 provision_proxmox_tls_insecure: true
 provision_proxmox_parallel: 10
 provision_tf_parallelism: 3
-provision_tf_provider_proxmox_version: "3.0.2-rc08"
-provision_tf_provider_dns_version: "3.5.0"
-provision_tf_provider_local_version: "2.8.0"
+# provision_tf_provider_*_version — SoT only in
+# playbooks/group_vars/all/provision_defaults.yml (no role-default copy).
 provision_dns_key_algorithm: hmac-sha256
 provision_dns_transport: tcp4
 provision_dns_tf_manage_a_records: false

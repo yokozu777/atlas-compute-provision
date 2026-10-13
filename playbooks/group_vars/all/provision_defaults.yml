@@ -23,9 +23,9 @@ provision_proxmox_api_url: "https://{{ provision_pve_host }}:8006/api2/json"
 provision_proxmox_tls_insecure: true
 provision_proxmox_parallel: 10
 provision_tf_parallelism: 3
-provision_tf_provider_proxmox_version: "3.0.2-rc08"
-provision_tf_provider_dns_version: "3.5.0"
-provision_tf_provider_local_version: "2.8.0"
+provision_tf_provider_proxmox_version: "3.0.2-rc10"
+provision_tf_provider_dns_version: "3.6.2"
+provision_tf_provider_local_version: "2.9.1"
 provision_tf_plugin_dir: "{{ lookup('env', 'HOME') }}/.terraform.d/plugins"
 provision_tf_plugin_cache_dir: "{{ lookup('env', 'HOME') }}/.terraform.d/plugin-cache"
 
