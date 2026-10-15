@@ -21,6 +21,8 @@
         dest: "{{ provision_tf_lock_probe_dir.path }}/providers.tf"
         mode: "0644"
 
+    # Providers come from providers.tf (short sources); do not pass
+    # hardcoded full registry addresses on the lock argv.
     - name: Generate provider lock checksums from preinstalled mirror
       ansible.builtin.command:
         argv:
@@ -29,8 +31,6 @@
           - lock
           - "-fs-mirror={{ provision_tf_plugin_dir }}"
           - -platform=linux_amd64
-          - registry.terraform.io/telmate/proxmox
-          - registry.terraform.io/hashicorp/dns
         chdir: "{{ provision_tf_lock_probe_dir.path }}"
       register: provision_tf_lock_probe_cmd
       changed_when: false

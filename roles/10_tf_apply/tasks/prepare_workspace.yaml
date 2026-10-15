@@ -10,14 +10,18 @@
 
 - name: Find preinstalled Proxmox Terraform provider
   ansible.builtin.find:
-    paths: "{{ provision_tf_plugin_dir }}/registry.terraform.io/telmate/proxmox/{{ provision_tf_provider_proxmox_version }}/linux_amd64"
+    paths:
+      - "{{ provision_tf_plugin_dir }}/registry.opentofu.org/telmate/proxmox/{{ provision_tf_provider_proxmox_version }}/linux_amd64"
+      - "{{ provision_tf_plugin_dir }}/registry.terraform.io/telmate/proxmox/{{ provision_tf_provider_proxmox_version }}/linux_amd64"
     patterns: terraform-provider-proxmox*
     file_type: any
   register: provision_tf_proxmox_plugin_find
 
 - name: Find preinstalled DNS Terraform provider
   ansible.builtin.find:
-    paths: "{{ provision_tf_plugin_dir }}/registry.terraform.io/hashicorp/dns/{{ provision_tf_provider_dns_version }}/linux_amd64"
+    paths:
+      - "{{ provision_tf_plugin_dir }}/registry.opentofu.org/hashicorp/dns/{{ provision_tf_provider_dns_version }}/linux_amd64"
+      - "{{ provision_tf_plugin_dir }}/registry.terraform.io/hashicorp/dns/{{ provision_tf_provider_dns_version }}/linux_amd64"
     patterns: terraform-provider-dns*
     file_type: any
   register: provision_tf_dns_plugin_find

@@ -611,6 +611,24 @@ class ComputeProvisionLayoutTest(unittest.TestCase):
         self.assertTrue((REPO_ROOT / "modules" / "proxmox_vm").is_dir())
         self.assertTrue((REPO_ROOT / "stacks" / "_shared" / "providers.tf.j2").is_file())
 
+    def test_tf_apply_reconcile_lock_uses_providers_tf_not_hardcoded_registry(self) -> None:
+        """OpenTofu remaps short sources to registry.opentofu.org; lock must not hardcode terraform.io."""
+        lock = (
+            REPO_ROOT / "roles" / "10_tf_apply" / "tasks" / "reconcile_plugin_lock.yaml"
+        ).read_text(encoding="utf-8")
+        self.assertIn("providers", lock)
+        self.assertIn("lock", lock)
+        self.assertIn("-fs-mirror=", lock)
+        self.assertNotIn("registry.terraform.io/", lock)
+        self.assertNotIn("registry.opentofu.org/", lock)
+        prepare = (
+            REPO_ROOT / "roles" / "10_tf_apply" / "tasks" / "prepare_workspace.yaml"
+        ).read_text(encoding="utf-8")
+        self.assertIn("registry.opentofu.org/telmate/proxmox", prepare)
+        self.assertIn("registry.terraform.io/telmate/proxmox", prepare)
+        self.assertIn("registry.opentofu.org/hashicorp/dns", prepare)
+        self.assertIn("registry.terraform.io/hashicorp/dns", prepare)
+
     def test_validate_defaults_git_push_opt_in(self) -> None:
         defaults = (REPO_ROOT / "roles" / "00_validate_provision" / "defaults" / "main.yml").read_text(
             encoding="utf-8"
